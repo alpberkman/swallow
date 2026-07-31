@@ -248,7 +248,7 @@ run_scenario() {
     # swallow must come first with its own flags before the target command
     # (--occupy makes the geometry assertion below meaningful); "$@", if
     # given, is a wrapper like fork_exec_helper that itself launches xmessage.
-    DISPLAY=":$XDISP" "$SWALLOW" --occupy "$@" xmessage -title "$app_title" -center "hello from $desc" \
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy --timeout 30 "$@" xmessage -title "$app_title" -center "hello from $desc" \
         >/tmp/swallow-test-run.log 2>&1 &
     local swallow_pid=$!
     CLEANUP_PIDS+=("$swallow_pid")
@@ -300,7 +300,7 @@ run_detached_scenario() {
 
     # The "stub": like kate's real binary, forwards the request to the
     # unrelated daemon above (standing in for D-Bus) and exits immediately.
-    DISPLAY=":$XDISP" "$SWALLOW" --occupy sh -c "echo 'xmessage -title \"$app_title\" -center hi' > $fifo" \
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy --timeout 30 sh -c "echo 'xmessage -title \"$app_title\" -center hi' > $fifo" \
         >/tmp/swallow-test-run.log 2>&1 &
     local swallow_pid=$!
     CLEANUP_PIDS+=("$swallow_pid")
@@ -342,7 +342,7 @@ run_flag_case() {
     CASE_TERM_WIN="$SETUP_TERM_WIN"
     CASE_XTERM_PID="$SETUP_XTERM_PID"
 
-    DISPLAY=":$XDISP" "$SWALLOW" "$@" xmessage -title "$app_title" -center "hi" \
+    DISPLAY=":$XDISP" "$SWALLOW" --timeout 30 "$@" xmessage -title "$app_title" -center "hi" \
         >/tmp/swallow-test-run.log 2>&1 &
     CASE_SWALLOW_PID=$!
 
@@ -508,7 +508,7 @@ run_real_app_scenario() {
     setup_terminal "$desc" "$term_title" || return
     local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
 
-    DISPLAY=":$XDISP" "$SWALLOW" --occupy "$@" >/tmp/swallow-test-run.log 2>&1 &
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy --timeout 30 "$@" >/tmp/swallow-test-run.log 2>&1 &
     local swallow_pid=$!
     CLEANUP_PIDS+=("$swallow_pid")
 
@@ -535,11 +535,57 @@ run_real_app_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --timeout gives up instead of hanging forever -------------
+# `sleep` never creates a window at all. With --timeout 1, swallow should
+# give up around then rather than blocking until sleep exits on its own --
+# and, critically, without ever having hidden the terminal in the meantime.
+run_timeout_scenario() {
+    local desc="timeout"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
+
+    local start=$SECONDS
+    DISPLAY=":$XDISP" "$SWALLOW" --timeout 1 sleep 5 >/tmp/swallow-test-timeout.log 2>&1
+    local status=$? elapsed=$((SECONDS - start))
+
+    if [ "$status" -ne 0 ]; then
+        pass "$desc: swallow exits non-zero when no window ever appears"
+    else
+        fail "$desc: swallow exited 0 despite no window ever appearing"
+    fi
+
+    if [ "$elapsed" -le 4 ]; then
+        pass "$desc: swallow gave up around --timeout instead of waiting for the command ($elapsed s)"
+    else
+        fail "$desc: swallow took ${elapsed}s to give up, expected ~1s (--timeout 1)"
+    fi
+
+    if window_mapped "$term_win"; then
+        pass "$desc: terminal was never hidden after a timeout"
+    else
+        fail "$desc: terminal was hidden despite swallow timing out"
+    fi
+
+    if [ "$(window_geom "$term_win")" = "$term_geom_before" ]; then
+        pass "$desc: terminal geometry untouched after a timeout"
+    else
+        fail "$desc: terminal geometry changed despite swallow timing out"
+    fi
+
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
 run_scenario "phantom helper window (Kate-style)" "$PHANTOM_HELPER"
 run_detached_scenario
 run_flags_scenario
+run_timeout_scenario
 
 if command -v zathura >/dev/null 2>&1; then
     run_real_app_scenario "zathura (real app)" zathura zathura

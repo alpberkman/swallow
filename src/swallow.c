@@ -17,7 +17,9 @@
  *
  * Before hiding, the new window's placement is set per the --x/--y/--width/
  * --length/--default/--occupy/--full-screen flags (see --help). The default
- * (no flags) is to leave placement to the WM.
+ * (no flags) is to leave placement to the WM. If no window shows up within
+ * --timeout seconds (default 3), swallow gives up and exits without ever
+ * hiding the terminal.
  *
  * The terminal is hidden by unmapping it (ICCCM Normal -> Withdrawn), which
  * drops it from the taskbar/pager entirely -- not just iconify, which would
@@ -35,15 +37,20 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+#define DEFAULT_TIMEOUT_SEC 3
 
 static const struct option long_opts[] = {
     {"x", required_argument, NULL, 'x'},
     {"y", required_argument, NULL, 'y'},
     {"width", required_argument, NULL, 'w'},
     {"length", required_argument, NULL, 'l'},
+    {"timeout", required_argument, NULL, 't'},
     {"default", no_argument, NULL, 'd'},
     {"occupy", no_argument, NULL, 'o'},
     {"full-screen", no_argument, NULL, 'f'},
@@ -63,6 +70,8 @@ static void usage(const char *prog) {
         "  -d, --default      Let the window manager choose size/position (the default)\n"
         "  -o, --occupy       Make the new window occupy the terminal's exact spot\n"
         "  -f, --full-screen  Start the new window full-screen\n"
+        "  -t, --timeout <n>  Give up if no window appears within n seconds\n"
+        "                     (default %d; 0 waits forever)\n"
         "  -h, --help         Show this help and exit\n"
         "\n"
         "--default and --occupy are mutually exclusive. With no options at all,\n"
@@ -70,7 +79,7 @@ static void usage(const char *prog) {
         "together to place the window manually; any not given are left to the app/WM.\n"
         "--full-screen composes with the others rather than replacing them: it's the\n"
         "geometry the window returns to if full-screen is ever turned off.\n",
-        prog);
+        prog, DEFAULT_TIMEOUT_SEC);
 }
 
 static int x_error_handler(Display *dpy, XErrorEvent *e) {
@@ -163,10 +172,12 @@ static void get_frame_extents(Display *dpy, Window win, Atom net_frame_extents,
     }
 }
 
-/* Wait for the next top-level window to be created and mapped. Blocks
- * indefinitely: whatever swallow launched may exit long before the real
- * window shows up (see file header comment), so there's no exit condition
- * to race against other than a window actually appearing.
+/* Wait for the next top-level window to be created and mapped, up to
+ * timeout_sec seconds (0 waits forever). Returns None on timeout: whatever
+ * swallow launched may exit long before the real window shows up (see file
+ * header comment), so there's otherwise no exit condition to race against
+ * other than a window actually appearing -- a bad command or a launch that
+ * never opens a window would hang forever without this.
  *
  * Doesn't keep an explicit candidate list. Instead it relies on how X
  * delivers MapNotify: a client only gets a *self*-addressed one (event ==
@@ -182,23 +193,45 @@ static void get_frame_extents(Display *dpy, Window win, Atom net_frame_extents,
  * proxy, etc.) before their real main window, and committing to only the
  * first one seen would get stuck waiting on it forever if it never itself
  * maps or closes, even after the real window has already appeared. */
-static Window wait_for_target_window(Display *dpy, Window root) {
+static Window wait_for_target_window(Display *dpy, Window root, long timeout_sec) {
+    time_t deadline = timeout_sec > 0 ? time(NULL) + timeout_sec : 0;
+    int fd = ConnectionNumber(dpy);
+
     for (;;) {
-        XEvent ev;
-        XNextEvent(dpy, &ev);
+        while (XPending(dpy)) {
+            XEvent ev;
+            XNextEvent(dpy, &ev);
 
-        if (ev.type == CreateNotify) {
-            XCreateWindowEvent *ce = &ev.xcreatewindow;
-            if (ce->parent != root || ce->override_redirect)
-                continue;
+            if (ev.type == CreateNotify) {
+                XCreateWindowEvent *ce = &ev.xcreatewindow;
+                if (ce->parent != root || ce->override_redirect)
+                    continue;
 
-            /* Select directly on the window (not just SubstructureNotify on
-             * root) so we keep tracking it after the WM reparents it into a
-             * frame -- and so its MapNotify arrives self-addressed. */
-            XSelectInput(dpy, ce->window, StructureNotifyMask);
-        } else if (ev.type == MapNotify && ev.xmap.event == ev.xmap.window) {
-            return ev.xmap.window;
+                /* Select directly on the window (not just SubstructureNotify
+                 * on root) so we keep tracking it after the WM reparents it
+                 * into a frame -- and so its MapNotify arrives
+                 * self-addressed. */
+                XSelectInput(dpy, ce->window, StructureNotifyMask);
+            } else if (ev.type == MapNotify && ev.xmap.event == ev.xmap.window) {
+                return ev.xmap.window;
+            }
         }
+
+        int timeout_ms = -1; /* poll()'s "block forever" */
+        if (deadline) {
+            time_t remaining = deadline - time(NULL);
+            if (remaining <= 0)
+                return None;
+            timeout_ms = (int)(remaining * 1000);
+        }
+
+        /* Blocks (bounded by timeout_ms when a deadline is set) until X data
+         * is available; a signal (EINTR) just loops back around and
+         * re-checks the deadline. */
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        int r = poll(&pfd, 1, timeout_ms);
+        if (r == 0)
+            return None;
     }
 }
 
@@ -214,6 +247,7 @@ static void wait_for_window_close(Display *dpy, Window target) {
 int main(int argc, char **argv) {
     int have_x = 0, have_y = 0, have_w = 0, have_l = 0;
     long val_x = 0, val_y = 0, val_w = 0, val_l = 0;
+    long timeout_sec = DEFAULT_TIMEOUT_SEC;
     int want_default = 0, want_occupy = 0, want_fullscreen = 0;
 
     int c;
@@ -221,7 +255,7 @@ int main(int argc, char **argv) {
     /* Leading '+' stops at the first non-option argument (the command to
      * launch) instead of permuting the whole argv -- its own flags aren't
      * ours to parse. */
-    while ((c = getopt_long(argc, argv, "+x:y:w:l:dofh", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofh", long_opts, NULL)) != -1) {
         switch (c) {
         case 'x':
             val_x = strtol(optarg, &end, 10);
@@ -242,6 +276,10 @@ int main(int argc, char **argv) {
             val_l = strtol(optarg, &end, 10);
             if (*end != '\0') { fprintf(stderr, "swallow: -l/--length requires a numeric argument\n"); return 1; }
             have_l = 1;
+            break;
+        case 't':
+            timeout_sec = strtol(optarg, &end, 10);
+            if (*end != '\0' || timeout_sec < 0) { fprintf(stderr, "swallow: -t/--timeout requires a non-negative numeric argument\n"); return 1; }
             break;
         case 'd': want_default = 1; break;
         case 'o': want_occupy = 1; break;
@@ -294,7 +332,13 @@ int main(int argc, char **argv) {
         _exit(127);
     }
 
-    Window target = wait_for_target_window(dpy, root);
+    Window target = wait_for_target_window(dpy, root, timeout_sec);
+    if (target == None) {
+        fprintf(stderr, "swallow: timed out after %lds waiting for a window from %s\n",
+                timeout_sec, cmd_argv[0]);
+        XCloseDisplay(dpy);
+        return 1;
+    }
 
     /* Withdrawing forgets the window's geometry with the WM, so remapping
      * later re-triggers its placement policy (e.g. re-centering) instead of
