@@ -393,7 +393,8 @@ run_flags_scenario() {
     help_out="$(DISPLAY=":$XDISP" "$SWALLOW" --help 2>&1)"
     help_status=$?
     if [ "$help_status" -eq 0 ] && echo "$help_out" | grep -q -- '--occupy' \
-        && echo "$help_out" | grep -q -- '--full-screen'; then
+        && echo "$help_out" | grep -q -- '--full-screen' \
+        && echo "$help_out" | grep -q -- '--remain'; then
         pass "flags: --help exits 0 and lists the flags"
     else
         fail "flags: --help output looks wrong"
@@ -580,12 +581,104 @@ run_timeout_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --remain, terminal takes the app's last spot on close -----
+# Moves/resizes the app window after it appears (standing in for the user
+# repositioning it while they work), then closes it and checks the terminal
+# ends up there -- not back at its own original spot.
+run_remain_scenario() {
+    local desc="remain"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$SWALLOW" --remain --timeout 30 xmessage -title "$app_title" -center "hello from $desc" \
+        >/tmp/swallow-test-remain.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+    pass "$desc: app window appeared"
+
+    local ticks=15
+    while [ "$ticks" -gt 0 ]; do
+        window_mapped "$term_win" || break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+
+    DISPLAY=":$XDISP" xdotool windowmove "$app_win" 120 90 >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool windowsize "$app_win" 260 180 >/dev/null 2>&1
+    sleep 0.3
+    local app_geom_final
+    app_geom_final="$(window_geom "$app_win")"
+
+    local app_pid
+    app_pid="$(DISPLAY=":$XDISP" xdotool getwindowpid "$app_win" 2>/dev/null)"
+    if [ -n "$app_pid" ]; then
+        kill -TERM "$app_pid" >/dev/null 2>&1
+    else
+        DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+    fi
+
+    if wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null"; then
+        pass "$desc: swallow exited after app window closed"
+    else
+        fail "$desc: swallow did not exit after app window closed"
+    fi
+
+    ticks=15
+    while [ "$ticks" -gt 0 ]; do
+        window_mapped "$term_win" && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if window_mapped "$term_win"; then
+        pass "$desc: terminal was restored"
+    else
+        fail "$desc: terminal was not restored"
+    fi
+
+    local term_geom_after
+    term_geom_after="$(window_geom "$term_win")"
+    if geom_close "$term_geom_after" "$app_geom_final" 20; then
+        pass "$desc: terminal took the app's last position/size ($term_geom_after ~ $app_geom_final)"
+    else
+        fail "$desc: terminal geometry ($term_geom_after) doesn't match app's last spot ($app_geom_final)"
+    fi
+
+    if [ "$term_geom_after" != "$term_geom_before" ]; then
+        pass "$desc: terminal geometry differs from its original spot ($term_geom_before), as expected with --remain"
+    else
+        fail "$desc: terminal geometry unchanged from before ($term_geom_before) -- --remain had no effect"
+    fi
+
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
 run_scenario "phantom helper window (Kate-style)" "$PHANTOM_HELPER"
 run_detached_scenario
 run_flags_scenario
 run_timeout_scenario
+run_remain_scenario
 
 if command -v zathura >/dev/null 2>&1; then
     run_real_app_scenario "zathura (real app)" zathura zathura

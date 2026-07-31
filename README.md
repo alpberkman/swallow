@@ -67,6 +67,7 @@ exactly where it was.
 | `-o` | `--occupy` | Make the new window occupy the terminal's exact spot |
 | `-f` | `--full-screen` | Start the new window full-screen |
 | `-t <n>` | `--timeout <n>` | Give up if no window appears within n seconds (default 3; 0 waits forever) |
+| `-r` | `--remain` | When the app's window closes, put the terminal where that window ended up instead of restoring its own original spot |
 | `-h` | `--help` | Show usage and exit |
 
 Notes:
@@ -85,6 +86,10 @@ Notes:
   would otherwise wait forever. If it times out, `swallow` exits non-zero
   and the terminal is left untouched (it's never hidden until a window is
   actually found).
+- `--remain` is a "reverse occupy": rather than the terminal always
+  snapping back to exactly where it started, it follows the app instead —
+  useful if you moved/resized the app window while using it and would
+  rather the terminal picked up from there than jump back to its old spot.
 
 ## How it works
 
@@ -100,6 +105,10 @@ Notes:
 - Waiting for that window is done with `poll()` on the X connection, bounded
   by `--timeout`, rather than blocking forever — so a command that never
   opens a window doesn't hang `swallow` indefinitely.
+- With `--remain`, the app window's on-screen position/size is tracked as it
+  moves or resizes (not just captured once), so the terminal ends up
+  wherever it was left right before closing, however many times it moved in
+  between.
 
 ## Testing
 

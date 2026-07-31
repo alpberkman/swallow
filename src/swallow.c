@@ -24,14 +24,17 @@
  * The terminal is hidden by unmapping it (ICCCM Normal -> Withdrawn), which
  * drops it from the taskbar/pager entirely -- not just iconify, which would
  * leave a minimized entry behind. It's restored by mapping it again
- * (Withdrawn -> Normal), re-asserting its old geometry (withdrawing forgets
- * it, so the WM's placement policy would otherwise relocate/resize it), and
- * focusing it via _NET_ACTIVE_WINDOW.
+ * (Withdrawn -> Normal), re-asserting its geometry (withdrawing forgets it,
+ * so the WM's placement policy would otherwise relocate/resize it), and
+ * focusing it via _NET_ACTIVE_WINDOW. Normally that reasserted geometry is
+ * the terminal's own original spot; with --remain it's instead wherever the
+ * app's window last was before it closed.
  */
 
 #define _DEFAULT_SOURCE
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/Xutil.h>
 
 #include <errno.h>
 #include <getopt.h>
@@ -54,6 +57,7 @@ static const struct option long_opts[] = {
     {"default", no_argument, NULL, 'd'},
     {"occupy", no_argument, NULL, 'o'},
     {"full-screen", no_argument, NULL, 'f'},
+    {"remain", no_argument, NULL, 'r'},
     {"help", no_argument, NULL, 'h'},
     {NULL, 0, NULL, 0},
 };
@@ -72,6 +76,9 @@ static void usage(const char *prog) {
         "  -f, --full-screen  Start the new window full-screen\n"
         "  -t, --timeout <n>  Give up if no window appears within n seconds\n"
         "                     (default %d; 0 waits forever)\n"
+        "  -r, --remain       When the app's window closes, put the terminal where\n"
+        "                     that window ended up instead of restoring the\n"
+        "                     terminal's original position/size\n"
         "  -h, --help         Show this help and exit\n"
         "\n"
         "--default and --occupy are mutually exclusive. With no options at all,\n"
@@ -235,12 +242,25 @@ static Window wait_for_target_window(Display *dpy, Window root, long timeout_sec
     }
 }
 
-static void wait_for_window_close(Display *dpy, Window target) {
+/* Waits for target to close. If track_geometry is set, also keeps the
+ * out_x, out_y, out_w, out_h outputs updated to target's current on-screen
+ * frame geometry as it changes (--remain), by re-deriving it via
+ * get_window_geometry() on every ConfigureNotify target gets -- rather than
+ * trusting the event's own x/y/width/height, since those are parent-relative
+ * unless the WM happened to send a synthetic (root-relative) one, and
+ * get_window_geometry() already does the reparenting-aware lookup correctly
+ * regardless of which kind arrived. By the time DestroyNotify fires the
+ * window is gone and can't be queried anymore, hence tracking as we go
+ * rather than at close time. */
+static void wait_for_window_close(Display *dpy, Window root, Window target, int track_geometry,
+                                   int *out_x, int *out_y, int *out_w, int *out_h) {
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         if (ev.type == DestroyNotify && ev.xdestroywindow.window == target)
             return;
+        if (track_geometry && ev.type == ConfigureNotify && ev.xconfigure.window == target)
+            get_window_geometry(dpy, target, root, out_x, out_y, out_w, out_h);
     }
 }
 
@@ -248,14 +268,14 @@ int main(int argc, char **argv) {
     int have_x = 0, have_y = 0, have_w = 0, have_l = 0;
     long val_x = 0, val_y = 0, val_w = 0, val_l = 0;
     long timeout_sec = DEFAULT_TIMEOUT_SEC;
-    int want_default = 0, want_occupy = 0, want_fullscreen = 0;
+    int want_default = 0, want_occupy = 0, want_fullscreen = 0, want_remain = 0;
 
     int c;
     char *end;
     /* Leading '+' stops at the first non-option argument (the command to
      * launch) instead of permuting the whole argv -- its own flags aren't
      * ours to parse. */
-    while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofh", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofrh", long_opts, NULL)) != -1) {
         switch (c) {
         case 'x':
             val_x = strtol(optarg, &end, 10);
@@ -284,6 +304,7 @@ int main(int argc, char **argv) {
         case 'd': want_default = 1; break;
         case 'o': want_occupy = 1; break;
         case 'f': want_fullscreen = 1; break;
+        case 'r': want_remain = 1; break;
         case 'h': usage(argv[0]); return 0;
         default: usage(argv[0]); return 1;
         }
@@ -392,13 +413,38 @@ int main(int argc, char **argv) {
                              1, (long)net_wm_state_fullscreen, 0, 2, 0);
     }
 
+    /* --remain: track target's geometry as it moves/resizes so that, once it
+     * closes, the terminal can take its place instead of its own old spot.
+     * Seeded here (rather than left zeroed) in case target closes before its
+     * first ConfigureNotify ever arrives. */
+    int remain_x = term_x, remain_y = term_y, remain_w = term_w, remain_h = term_h;
+    if (want_remain)
+        get_window_geometry(dpy, target, root, &remain_x, &remain_y, &remain_w, &remain_h);
+
     /* Unmapping (rather than iconifying) makes the terminal actually
      * disappear: ICCCM's Normal -> Withdrawn transition, which drops it
      * from the taskbar/pager entirely instead of leaving a minimized entry. */
     XUnmapWindow(dpy, term_win);
     XFlush(dpy);
 
-    wait_for_window_close(dpy, target);
+    wait_for_window_close(dpy, root, target, want_remain, &remain_x, &remain_y, &remain_w, &remain_h);
+
+    /* Restore geometry: target's last-known spot for --remain, otherwise the
+     * terminal's own original spot. Both are frame footprints, so both need
+     * the same frame-extents-to-client-size conversion as client_w/client_h
+     * above -- using the terminal's own insets either way, since it's the
+     * terminal being placed. */
+    int restore_x = term_x, restore_y = term_y, restore_w = client_w, restore_h = client_h;
+    if (want_remain) {
+        restore_x = remain_x;
+        restore_y = remain_y;
+        restore_w = remain_w - left - right;
+        restore_h = remain_h - top - bottom;
+        if (restore_w <= 0)
+            restore_w = remain_w;
+        if (restore_h <= 0)
+            restore_h = remain_h;
+    }
 
     /* ICCCM: Withdrawn -> Normal is done simply by mapping the window again. */
     XMapWindow(dpy, term_win);
@@ -406,7 +452,7 @@ int main(int argc, char **argv) {
      * indication 2 (pager/tool), x/y/width/height all present (bits 8-11). */
     send_client_message(dpy, term_win, root, net_moveresize_window,
                          (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),
-                         term_x, term_y, client_w, client_h);
+                         restore_x, restore_y, restore_w, restore_h);
     send_client_message(dpy, term_win, root, net_active_window, 2, 0, 0, 0, 0);
     XFlush(dpy);
 

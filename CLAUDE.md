@@ -2,7 +2,9 @@
 
 A minimal C/X11 CLI tool for Linux (target WM: Openbox). It launches a GUI
 app from a terminal, hides the terminal while the app's window is open, and
-restores the terminal (position + size) when the app's window closes.
+restores the terminal (position + size) when the app's window closes — or,
+with `--remain`, moves the terminal to wherever the app's window ended up
+instead.
 
 ## Build / install / test
 
@@ -50,6 +52,16 @@ dependencies beyond libX11.
   reliably failed to ever detect the target window's events in testing and
   even crashed a nested Xephyr server under repeated use; blocking directly
   on the connection fd is required, not just "nicer."
+- `-r/--remain`: instead of restoring the terminal's own original geometry
+  on close, `wait_for_window_close()` tracks the target window's on-screen
+  frame geometry as it changes — re-deriving it via `get_window_geometry()`
+  (the same reparenting-aware helper used for the terminal) on every
+  `ConfigureNotify` the target gets, since by the time `DestroyNotify` fires
+  the window is gone and can't be queried anymore. `wait_for_window_close()`
+  itself still just blocks on `XNextEvent()` with no timeout, unlike
+  `wait_for_target_window()` — there's no equivalent failure mode to guard
+  against here (the window already exists; waiting for it to close is the
+  whole point), so no `poll()`/`select()` is needed.
 
 ## Testing
 
@@ -75,6 +87,12 @@ checks it gives up around 1s, exits non-zero, and leaves the terminal
 untouched. All other scenarios explicitly pass `--timeout 30` so they aren't
 coupled to how fast a given machine happens to be — only this scenario
 should actually race the timeout.
+
+`run_remain_scenario` covers `--remain`: launches `swallow --remain` against
+an app window, moves/resizes that window (standing in for the user
+repositioning it while they work) before closing it, then checks the
+terminal ends up at the app's last geometry rather than its own original
+spot.
 
 Everything runs against a nested Xephyr display, never the real desktop.
 
