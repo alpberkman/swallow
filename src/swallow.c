@@ -103,7 +103,8 @@ static Window get_active_window(Display *dpy, Window root, Atom net_active_windo
     return result;
 }
 
-static void send_client_message(Display *dpy, Window target, Window root, Atom type, long l0) {
+static void send_client_message(Display *dpy, Window target, Window root, Atom type,
+                                 long l0, long l1, long l2, long l3, long l4) {
     XEvent ev;
     memset(&ev, 0, sizeof(ev));
     ev.xclient.type = ClientMessage;
@@ -111,7 +112,35 @@ static void send_client_message(Display *dpy, Window target, Window root, Atom t
     ev.xclient.message_type = type;
     ev.xclient.format = 32;
     ev.xclient.data.l[0] = l0;
+    ev.xclient.data.l[1] = l1;
+    ev.xclient.data.l[2] = l2;
+    ev.xclient.data.l[3] = l3;
+    ev.xclient.data.l[4] = l4;
     XSendEvent(dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+}
+
+/* Root-relative screen position of win, using its decoration frame (the WM
+ * reparents managed windows one level under root) if it has one. */
+static void get_window_position(Display *dpy, Window win, Window root, int *x, int *y) {
+    Window r, parent, *children = NULL;
+    unsigned int nchildren = 0;
+    Window target = win;
+
+    if (XQueryTree(dpy, win, &r, &parent, &children, &nchildren)) {
+        if (children)
+            XFree(children);
+        if (parent != None && parent != root)
+            target = parent;
+    }
+
+    XWindowAttributes attrs;
+    if (XGetWindowAttributes(dpy, target, &attrs)) {
+        *x = attrs.x;
+        *y = attrs.y;
+    } else {
+        *x = 0;
+        *y = 0;
+    }
 }
 
 /* Wait for a top-level window whose owning process is in target_pgid to be
@@ -181,6 +210,7 @@ int main(int argc, char **argv) {
 
     Window root = DefaultRootWindow(dpy);
     Atom net_active_window = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
+    Atom net_moveresize_window = XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
 
     Window term_win = get_active_window(dpy, root, net_active_window);
     if (term_win == None) {
@@ -206,6 +236,12 @@ int main(int argc, char **argv) {
 
     Window target = wait_for_target_window(dpy, root, /* target_pgid = */ child);
 
+    /* Withdrawing forgets the window's position with the WM, so remapping
+     * later re-triggers its placement policy (e.g. re-centering) instead of
+     * putting it back where it was -- save it here and re-assert it below. */
+    int term_x, term_y;
+    get_window_position(dpy, term_win, root, &term_x, &term_y);
+
     /* Unmapping (rather than iconifying) makes the terminal actually
      * disappear: ICCCM's Normal -> Withdrawn transition, which drops it
      * from the taskbar/pager entirely instead of leaving a minimized entry. */
@@ -216,7 +252,11 @@ int main(int argc, char **argv) {
 
     /* ICCCM: Withdrawn -> Normal is done simply by mapping the window again. */
     XMapWindow(dpy, term_win);
-    send_client_message(dpy, term_win, root, net_active_window, 2);
+    /* _NET_MOVERESIZE_WINDOW: gravity 0 (use the window's own), source
+     * indication 2 (pager/tool), x and y present (bits 8-9), no w/h. */
+    send_client_message(dpy, term_win, root, net_moveresize_window,
+                         (2 << 12) | (1 << 8) | (1 << 9), term_x, term_y, 0, 0);
+    send_client_message(dpy, term_win, root, net_active_window, 2, 0, 0, 0, 0);
     XFlush(dpy);
 
     int status;

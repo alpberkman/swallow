@@ -60,12 +60,14 @@ wait_for() { # wait_for <timeout_seconds> <command...>
 
 find_window() { DISPLAY=":$XDISP" xdotool search --name "$1" 2>/dev/null | head -n1; }
 
-window_state() {
-    DISPLAY=":$XDISP" xprop -id "$1" WM_STATE 2>/dev/null \
-        | sed -n 's/.*window state: \([A-Za-z]*\).*/\1/p'
+window_mapped() {
+    DISPLAY=":$XDISP" xwininfo -id "$1" 2>/dev/null | grep -q "IsViewable"
 }
 
-pid_alive() { kill -0 "$1" >/dev/null 2>&1; }
+window_pos() {
+    DISPLAY=":$XDISP" xdotool getwindowgeometry --shell "$1" 2>/dev/null \
+        | sed -n 's/^X=\(.*\)/\1/p;s/^Y=\(.*\)/\1/p' | paste -sd, -
+}
 
 # --- start a private X server + WM ------------------------------------
 for cand in $(seq 50 199); do
@@ -101,8 +103,9 @@ wait_for 10 bash -c \
 # --- test scenario ------------------------------------------------------
 # Launches `swallow $*` "from" a terminal window (the currently active
 # window), then verifies:
-#   1. the app window appears and the terminal is iconified
-#   2. killing the app window restores (un-iconifies) the terminal
+#   1. the app window appears and the terminal disappears (unmapped, not
+#      just minimized -- no leftover taskbar/pager entry)
+#   2. killing the app window restores the terminal, in the same place
 run_scenario() {
     local desc="$1"; shift
     local term_title="SwallowTestTerm-$$-$RANDOM"
@@ -130,6 +133,12 @@ run_scenario() {
     fi
 
     DISPLAY=":$XDISP" xdotool windowactivate --sync "$term_win" >/dev/null 2>&1
+    # Move it off whatever openbox's default placement would pick, so a
+    # position check after restore is actually meaningful.
+    DISPLAY=":$XDISP" xdotool windowmove "$term_win" 60 70 >/dev/null 2>&1
+    sleep 0.3
+    local term_pos_before
+    term_pos_before="$(window_pos "$term_win")"
 
     DISPLAY=":$XDISP" "$@" "$SWALLOW" xmessage -title "$app_title" -center "hello from $desc" \
         >/tmp/swallow-test-run.log 2>&1 &
@@ -151,19 +160,16 @@ run_scenario() {
     fi
     pass "$desc: app window appeared"
 
-    local term_state
-    term_state=""
     ticks=15
     while [ "$ticks" -gt 0 ]; do
-        term_state="$(window_state "$term_win")"
-        [ "$term_state" = "Iconic" ] && break
+        window_mapped "$term_win" || break
         ticks=$((ticks - 1))
         sleep 0.2
     done
-    if [ "$term_state" = "Iconic" ]; then
-        pass "$desc: terminal was hidden (iconified)"
+    if ! window_mapped "$term_win"; then
+        pass "$desc: terminal was hidden (unmapped, not just minimized)"
     else
-        fail "$desc: terminal was not hidden (state: $term_state)"
+        fail "$desc: terminal was not hidden"
     fi
 
     local app_pid
@@ -180,18 +186,24 @@ run_scenario() {
         fail "$desc: swallow did not exit after app window closed"
     fi
 
-    term_state=""
     ticks=15
     while [ "$ticks" -gt 0 ]; do
-        term_state="$(window_state "$term_win")"
-        [ "$term_state" = "Normal" ] && break
+        window_mapped "$term_win" && break
         ticks=$((ticks - 1))
         sleep 0.2
     done
-    if [ "$term_state" = "Normal" ]; then
+    if window_mapped "$term_win"; then
         pass "$desc: terminal was restored"
     else
-        fail "$desc: terminal was not restored (state: $term_state)"
+        fail "$desc: terminal was not restored"
+    fi
+
+    local term_pos_after
+    term_pos_after="$(window_pos "$term_win")"
+    if [ "$term_pos_after" = "$term_pos_before" ]; then
+        pass "$desc: terminal kept its position ($term_pos_before)"
+    else
+        fail "$desc: terminal moved (was $term_pos_before, now $term_pos_after)"
     fi
 
     kill "$xterm_pid" >/dev/null 2>&1
