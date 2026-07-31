@@ -1,14 +1,21 @@
-CC     ?= cc
-CFLAGS ?= -O2 -Wall -Wextra -std=c11
+CC       ?= cc
+CFLAGS   ?= -O2 -Wall -Wextra -std=c11
+PKG_CONFIG ?= pkg-config
 
-BIN := fork_exec_helper
+X11_CFLAGS := $(shell $(PKG_CONFIG) --cflags x11)
+X11_LIBS   := $(shell $(PKG_CONFIG) --libs x11)
+
+BINS := fork_exec_helper phantom_window_helper
 
 .PHONY: all clean
 
-all: $(BIN)
+all: $(BINS)
 
-$(BIN): fork_exec_helper.c
+fork_exec_helper: fork_exec_helper.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+phantom_window_helper: phantom_window_helper.c
+	$(CC) $(CFLAGS) $(X11_CFLAGS) -o $@ $< $(X11_LIBS)
+
 clean:
-	rm -f $(BIN)
+	rm -f $(BINS)

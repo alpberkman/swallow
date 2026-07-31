@@ -39,8 +39,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define MAX_CANDIDATES 16
-
 static const struct option long_opts[] = {
     {"x", required_argument, NULL, 'x'},
     {"y", required_argument, NULL, 'y'},
@@ -168,11 +166,23 @@ static void get_frame_extents(Display *dpy, Window win, Atom net_frame_extents,
 /* Wait for the next top-level window to be created and mapped. Blocks
  * indefinitely: whatever swallow launched may exit long before the real
  * window shows up (see file header comment), so there's no exit condition
- * to race against other than a window actually appearing. */
+ * to race against other than a window actually appearing.
+ *
+ * Doesn't keep an explicit candidate list. Instead it relies on how X
+ * delivers MapNotify: a client only gets a *self*-addressed one (event ==
+ * window) for a window it called XSelectInput(..., StructureNotifyMask) on
+ * directly; the relayed kind from root's SubstructureNotifyMask instead has
+ * event == root. Since the only windows we ever select directly on are
+ * qualifying CreateNotify windows below, seeing a self-addressed MapNotify
+ * already proves it's one of ours -- no separate bookkeeping needed.
+ *
+ * This also means every qualifying window stays tracked, not just the
+ * first: apps like Kate (KDE/Qt, via kdeinit/D-Bus activation) can create a
+ * non-override-redirect helper window (session restore prompt, IME/drag
+ * proxy, etc.) before their real main window, and committing to only the
+ * first one seen would get stuck waiting on it forever if it never itself
+ * maps or closes, even after the real window has already appeared. */
 static Window wait_for_target_window(Display *dpy, Window root) {
-    Window candidates[MAX_CANDIDATES];
-    int ncandidates = 0;
-
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
@@ -182,17 +192,12 @@ static Window wait_for_target_window(Display *dpy, Window root) {
             if (ce->parent != root || ce->override_redirect)
                 continue;
 
-            if (ncandidates < MAX_CANDIDATES) {
-                candidates[ncandidates++] = ce->window;
-                /* Select directly on the window (not just SubstructureNotify
-                 * on root) so we keep tracking it after the WM reparents it
-                 * into a frame. */
-                XSelectInput(dpy, ce->window, StructureNotifyMask);
-            }
-        } else if (ev.type == MapNotify) {
-            for (int i = 0; i < ncandidates; i++)
-                if (candidates[i] == ev.xmap.window)
-                    return ev.xmap.window;
+            /* Select directly on the window (not just SubstructureNotify on
+             * root) so we keep tracking it after the WM reparents it into a
+             * frame -- and so its MapNotify arrives self-addressed. */
+            XSelectInput(dpy, ce->window, StructureNotifyMask);
+        } else if (ev.type == MapNotify && ev.xmap.event == ev.xmap.window) {
+            return ev.xmap.window;
         }
     }
 }

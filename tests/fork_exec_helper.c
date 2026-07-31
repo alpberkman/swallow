@@ -3,8 +3,8 @@
  * immediately (e.g. a shell wrapper doing `real_binary &`, or classic
  * double-fork daemonizing). The process swallow directly launches is gone
  * before any window exists; the window later shows up owned by a process
- * reparented to init. Used to test that swallow's process-group matching
- * (rather than direct child/parent tracking) survives this.
+ * reparented to init. Used to test that swallow still correctly picks up
+ * the window despite that indirection.
  */
 #define _DEFAULT_SOURCE
 #include <stdio.h>

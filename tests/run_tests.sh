@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SWALLOW="$ROOT_DIR/swallow"
 FORK_HELPER="$SCRIPT_DIR/fork_exec_helper"
+PHANTOM_HELPER="$SCRIPT_DIR/phantom_window_helper"
 
 PASS=0
 FAIL=0
@@ -46,6 +47,7 @@ require xmessage
 
 [ -x "$SWALLOW" ] || { log "swallow tests: $SWALLOW not built"; exit 1; }
 [ -x "$FORK_HELPER" ] || { log "swallow tests: $FORK_HELPER not built"; exit 1; }
+[ -x "$PHANTOM_HELPER" ] || { log "swallow tests: $PHANTOM_HELPER not built"; exit 1; }
 
 wait_for() { # wait_for <timeout_seconds> <command...>
     local ticks=$(( $1 * 5 ))
@@ -59,6 +61,11 @@ wait_for() { # wait_for <timeout_seconds> <command...>
 }
 
 find_window() { DISPLAY=":$XDISP" xdotool search --name "$1" 2>/dev/null | head -n1; }
+find_window_by_class() {
+    # --onlyvisible matters: some apps (e.g. zathura) have unmapped helper
+    # windows sharing the same WM_CLASS as their real, visible window.
+    DISPLAY=":$XDISP" xdotool search --onlyvisible --class "$1" 2>/dev/null | head -n1
+}
 
 window_mapped() {
     DISPLAY=":$XDISP" xwininfo -id "$1" 2>/dev/null | grep -q "IsViewable"
@@ -123,16 +130,21 @@ wait_for 10 bash -c \
 #   2. killing the app window restores the terminal, in the same place
 verify_swallow_behavior() {
     local desc="$1" term_win="$2" app_win="$3" term_geom_before="$4" swallow_pid="$5"
+    # Real apps can decline to shrink below their own declared minimum size
+    # (WM_NORMAL_HINTS) -- entirely legitimate, so callers with less
+    # control over the app (e.g. real ones vs. our own test helpers) can
+    # widen this.
+    local tol="${6:-20}"
 
     local app_geom
     local ticks=10
     while [ "$ticks" -gt 0 ]; do
         app_geom="$(window_geom "$app_win")"
-        geom_close "$app_geom" "$term_geom_before" 20 && break
+        geom_close "$app_geom" "$term_geom_before" "$tol" && break
         ticks=$((ticks - 1))
         sleep 0.2
     done
-    if geom_close "$app_geom" "$term_geom_before" 20; then
+    if geom_close "$app_geom" "$term_geom_before" "$tol"; then
         pass "$desc: app window took the terminal's place ($app_geom ~ $term_geom_before)"
     else
         fail "$desc: app window geometry ($app_geom) doesn't match terminal's ($term_geom_before)"
@@ -482,10 +494,64 @@ run_flags_scenario() {
     fi
 }
 
+# --- scenario: real applications, spawned normally ----------------------
+# xmessage/xterm exercise the mechanics cheaply, but real apps are what
+# actually matter. Matched by WM_CLASS since neither offers a simple way to
+# give it a test-unique window title. Optional: skipped if not installed,
+# so the suite stays runnable without a full PDF viewer / KDE editor.
+run_real_app_scenario() {
+    local desc="$1" wm_class="$2"; shift 2
+    local term_title="SwallowRealTerm-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy "$@" >/tmp/swallow-test-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win="" ticks=100 # real apps can be slower to start than xmessage
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window_by_class "$wm_class")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+    pass "$desc: app window appeared"
+
+    # Wider tolerance than the synthetic scenarios: real apps can enforce
+    # their own minimum size (e.g. kate's sidebar/toolbar layout), which is
+    # legitimate and outside swallow's control.
+    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_geom_before" "$swallow_pid" 60
+
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
+run_scenario "phantom helper window (Kate-style)" "$PHANTOM_HELPER"
 run_detached_scenario
 run_flags_scenario
+
+if command -v zathura >/dev/null 2>&1; then
+    run_real_app_scenario "zathura (real app)" zathura zathura
+else
+    log "Scenario: zathura (real app) -- SKIPPED (zathura not installed)"
+fi
+
+if command -v kate >/dev/null 2>&1; then
+    run_real_app_scenario "kate (real app)" kate kate
+else
+    log "Scenario: kate (real app) -- SKIPPED (kate not installed)"
+fi
 
 log ""
 log "Results: $PASS passed, $FAIL failed"
