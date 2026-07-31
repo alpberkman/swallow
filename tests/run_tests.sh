@@ -186,15 +186,18 @@ verify_swallow_behavior() {
 }
 
 # Sets up a terminal window, activates it, and moves/sizes it to something
-# deliberately non-default so later geometry checks are meaningful. Prints
-# "term_win,term_geom_before|xterm_pid" on success, nothing on failure.
+# deliberately non-default so later geometry checks are meaningful. Sets
+# SETUP_TERM_WIN/SETUP_TERM_GEOM/SETUP_XTERM_PID as side effects rather than
+# printing them -- this is called directly (not via `$(...)`), since it
+# calls fail() on error, and fail()'s counter update wouldn't survive being
+# run in a subshell.
 setup_terminal() {
     local desc="$1" term_title="$2"
 
     DISPLAY=":$XDISP" xterm -title "$term_title" -e "sh -c 'while :; do sleep 3600; done'" \
         >/tmp/swallow-test-xterm.log 2>&1 &
-    local xterm_pid=$!
-    CLEANUP_PIDS+=("$xterm_pid")
+    SETUP_XTERM_PID=$!
+    CLEANUP_PIDS+=("$SETUP_XTERM_PID")
 
     local term_win=""
     local ticks=50
@@ -206,7 +209,7 @@ setup_terminal() {
     done
     if [ -z "$term_win" ]; then
         fail "$desc: terminal window never appeared"
-        kill "$xterm_pid" >/dev/null 2>&1
+        kill "$SETUP_XTERM_PID" >/dev/null 2>&1
         return 1
     fi
 
@@ -214,7 +217,8 @@ setup_terminal() {
     DISPLAY=":$XDISP" xdotool windowmove "$term_win" 60 70 >/dev/null 2>&1
     DISPLAY=":$XDISP" xdotool windowsize "$term_win" 500 350 >/dev/null 2>&1
     sleep 0.3
-    echo "$term_win,$(window_geom "$term_win")|$xterm_pid"
+    SETUP_TERM_WIN="$term_win"
+    SETUP_TERM_GEOM="$(window_geom "$term_win")"
     return 0
 }
 
@@ -226,13 +230,13 @@ run_scenario() {
 
     log "Scenario: $desc"
 
-    local setup term_win term_geom_before xterm_pid
-    setup="$(setup_terminal "$desc" "$term_title")" || return
-    term_win="${setup%%,*}"
-    term_geom_before="${setup#*,}"; term_geom_before="${term_geom_before%%|*}"
-    xterm_pid="${setup##*|}"
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
 
-    DISPLAY=":$XDISP" "$@" "$SWALLOW" xmessage -title "$app_title" -center "hello from $desc" \
+    # swallow must come first with its own flags before the target command
+    # (--occupy makes the geometry assertion below meaningful); "$@", if
+    # given, is a wrapper like fork_exec_helper that itself launches xmessage.
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy "$@" xmessage -title "$app_title" -center "hello from $desc" \
         >/tmp/swallow-test-run.log 2>&1 &
     local swallow_pid=$!
     CLEANUP_PIDS+=("$swallow_pid")
@@ -274,11 +278,8 @@ run_detached_scenario() {
 
     log "Scenario: $desc"
 
-    local setup term_win term_geom_before xterm_pid
-    setup="$(setup_terminal "$desc" "$term_title")" || return
-    term_win="${setup%%,*}"
-    term_geom_before="${setup#*,}"; term_geom_before="${term_geom_before%%|*}"
-    xterm_pid="${setup##*|}"
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
 
     mkfifo "$fifo" 2>/dev/null
     ( while read -r line; do DISPLAY=":$XDISP" sh -c "$line" & done < "$fifo" ) &
@@ -287,7 +288,7 @@ run_detached_scenario() {
 
     # The "stub": like kate's real binary, forwards the request to the
     # unrelated daemon above (standing in for D-Bus) and exits immediately.
-    DISPLAY=":$XDISP" "$SWALLOW" sh -c "echo 'xmessage -title \"$app_title\" -center hi' > $fifo" \
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy sh -c "echo 'xmessage -title \"$app_title\" -center hi' > $fifo" \
         >/tmp/swallow-test-run.log 2>&1 &
     local swallow_pid=$!
     CLEANUP_PIDS+=("$swallow_pid")
@@ -315,9 +316,176 @@ run_detached_scenario() {
     rm -f "$fifo"
 }
 
+# Runs `swallow <flags...> xmessage ...` against a fresh terminal and waits
+# for the app window. Sets CASE_APP_WIN/CASE_TERM_WIN/CASE_SWALLOW_PID/
+# CASE_XTERM_PID as side effects (see setup_terminal for why: this calls
+# fail() on error, which needs to run outside a subshell). Caller is
+# responsible for calling close_flag_case when done.
+run_flag_case() {
+    local desc="$1"; shift
+    local term_title="SwallowFlagTerm-$$-$RANDOM"
+    local app_title="SwallowFlagApp-$$-$RANDOM"
+
+    setup_terminal "$desc" "$term_title" || return 1
+    CASE_TERM_WIN="$SETUP_TERM_WIN"
+    CASE_XTERM_PID="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$SWALLOW" "$@" xmessage -title "$app_title" -center "hi" \
+        >/tmp/swallow-test-run.log 2>&1 &
+    CASE_SWALLOW_PID=$!
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$CASE_SWALLOW_PID" "$CASE_XTERM_PID" >/dev/null 2>&1
+        return 1
+    fi
+    sleep 0.3
+    CASE_APP_WIN="$app_win"
+    return 0
+}
+
+close_flag_case() {
+    local app_win="$1" term_win="$2" swallow_pid="$3" xterm_pid="$4"
+    local app_pid
+    app_pid="$(DISPLAY=":$XDISP" xdotool getwindowpid "$app_win" 2>/dev/null)"
+    if [ -n "$app_pid" ]; then
+        kill -TERM "$app_pid" >/dev/null 2>&1
+    else
+        DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+    fi
+    wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null" >/dev/null
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
+run_flags_scenario() {
+    log "Scenario: placement flags"
+
+    # --default and --occupy are mutually exclusive.
+    if DISPLAY=":$XDISP" "$SWALLOW" --default --occupy true >/dev/null 2>&1; then
+        fail "flags: --default + --occupy should be rejected"
+    else
+        pass "flags: --default + --occupy is rejected"
+    fi
+
+    # --help exits 0 and documents every flag.
+    local help_out help_status
+    help_out="$(DISPLAY=":$XDISP" "$SWALLOW" --help 2>&1)"
+    help_status=$?
+    if [ "$help_status" -eq 0 ] && echo "$help_out" | grep -q -- '--occupy' \
+        && echo "$help_out" | grep -q -- '--full-screen'; then
+        pass "flags: --help exits 0 and lists the flags"
+    else
+        fail "flags: --help output looks wrong"
+    fi
+
+    # No flags and --default should produce identical (WM-chosen) placement.
+    if run_flag_case "flags: no-flags placement"; then
+        local app1="$CASE_APP_WIN" geom1
+        geom1="$(window_geom "$app1")"
+        close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+        if run_flag_case "flags: --default placement" --default; then
+            local geom2
+            geom2="$(window_geom "$CASE_APP_WIN")"
+            close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+            if [ "$geom1" = "$geom2" ]; then
+                pass "flags: no-flags matches --default ($geom1)"
+            else
+                fail "flags: no-flags ($geom1) != --default ($geom2)"
+            fi
+        fi
+    fi
+
+    # Manual --x/--y/--width/--length: applied directly as the client
+    # geometry, so on-screen position is offset by decoration thickness
+    # (title bar/border) -- generous tolerance accounts for that.
+    if run_flag_case "flags: manual geometry" --x 40 --y 50 --width 300 --length 220; then
+        local geom3
+        geom3="$(window_geom "$CASE_APP_WIN")"
+        close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+        if geom_close "$geom3" "40,50,300,220" 60; then
+            pass "flags: manual geometry applied ($geom3 ~ 40,50,300,220)"
+        else
+            fail "flags: manual geometry ($geom3) doesn't match request (40,50,300,220)"
+        fi
+    fi
+
+    # --full-screen: covers the whole (Xephyr) screen and sets the EWMH state.
+    if run_flag_case "flags: full-screen" --full-screen; then
+        local geom4 state4
+        geom4="$(window_geom "$CASE_APP_WIN")"
+        state4="$(DISPLAY=":$XDISP" xprop -id "$CASE_APP_WIN" _NET_WM_STATE 2>/dev/null)"
+        close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+        if geom_close "$geom4" "0,0,800,600" 5; then
+            pass "flags: --full-screen covers the screen ($geom4)"
+        else
+            fail "flags: --full-screen geometry ($geom4) doesn't cover the screen"
+        fi
+        if echo "$state4" | grep -q "_NET_WM_STATE_FULLSCREEN"; then
+            pass "flags: --full-screen sets _NET_WM_STATE_FULLSCREEN"
+        else
+            fail "flags: --full-screen didn't set _NET_WM_STATE_FULLSCREEN"
+        fi
+    fi
+
+    # --full-screen composes with --occupy rather than replacing it: the
+    # window's "normal" (non-fullscreen) geometry should still be forced to
+    # the terminal's spot, with fullscreen layered on top.
+    if run_flag_case "flags: full-screen + occupy" --occupy --full-screen; then
+        local geom5 state5
+        geom5="$(window_geom "$CASE_APP_WIN")"
+        state5="$(DISPLAY=":$XDISP" xprop -id "$CASE_APP_WIN" _NET_WM_STATE 2>/dev/null)"
+        close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+        if geom_close "$geom5" "0,0,800,600" 5; then
+            pass "flags: --occupy + --full-screen still covers the screen ($geom5)"
+        else
+            fail "flags: --occupy + --full-screen geometry ($geom5) doesn't cover the screen"
+        fi
+        if echo "$state5" | grep -q "_NET_WM_STATE_FULLSCREEN"; then
+            pass "flags: --occupy + --full-screen sets _NET_WM_STATE_FULLSCREEN"
+        else
+            fail "flags: --occupy + --full-screen didn't set _NET_WM_STATE_FULLSCREEN"
+        fi
+    fi
+
+    # Short flags (-x/-y/-w/-l/-o/-d/-f/-h) should behave identically to
+    # their long forms.
+    if DISPLAY=":$XDISP" "$SWALLOW" -d -o true >/dev/null 2>&1; then
+        fail "flags: -d + -o should be rejected"
+    else
+        pass "flags: -d + -o is rejected"
+    fi
+
+    if run_flag_case "flags: short manual geometry" -x 40 -y 50 -w 300 -l 220; then
+        local geom6
+        geom6="$(window_geom "$CASE_APP_WIN")"
+        close_flag_case "$CASE_APP_WIN" "$CASE_TERM_WIN" "$CASE_SWALLOW_PID" "$CASE_XTERM_PID"
+
+        if geom_close "$geom6" "40,50,300,220" 60; then
+            pass "flags: short manual geometry applied ($geom6 ~ 40,50,300,220)"
+        else
+            fail "flags: short manual geometry ($geom6) doesn't match request (40,50,300,220)"
+        fi
+    fi
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
 run_detached_scenario
+run_flags_scenario
 
 log ""
 log "Results: $PASS passed, $FAIL failed"

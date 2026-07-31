@@ -15,10 +15,9 @@
  * breaks on one of these sooner or later; just watching for the next
  * window handles all of them uniformly.
  *
- * Before hiding, the new window is moved and resized (_NET_MOVERESIZE_WINDOW)
- * to occupy the terminal's exact screen rectangle, so the app visually
- * takes the terminal's place rather than appearing wherever the WM's
- * placement policy would otherwise put it.
+ * Before hiding, the new window's placement is set per the --x/--y/--width/
+ * --length/--default/--occupy/--full-screen flags (see --help). The default
+ * (no flags) is to leave placement to the WM.
  *
  * The terminal is hidden by unmapping it (ICCCM Normal -> Withdrawn), which
  * drops it from the taskbar/pager entirely -- not just iconify, which would
@@ -33,12 +32,48 @@
 #include <X11/Xatom.h>
 
 #include <errno.h>
+#include <getopt.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define MAX_CANDIDATES 16
+
+static const struct option long_opts[] = {
+    {"x", required_argument, NULL, 'x'},
+    {"y", required_argument, NULL, 'y'},
+    {"width", required_argument, NULL, 'w'},
+    {"length", required_argument, NULL, 'l'},
+    {"default", no_argument, NULL, 'd'},
+    {"occupy", no_argument, NULL, 'o'},
+    {"full-screen", no_argument, NULL, 'f'},
+    {"help", no_argument, NULL, 'h'},
+    {NULL, 0, NULL, 0},
+};
+
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "usage: %s [options] <command> [args...]\n"
+        "\n"
+        "Options (all affect only where/how the new window is placed):\n"
+        "  -x, --x <n>        X position for the new window\n"
+        "  -y, --y <n>        Y position for the new window\n"
+        "  -w, --width <n>    Width for the new window\n"
+        "  -l, --length <n>   Height for the new window\n"
+        "  -d, --default      Let the window manager choose size/position (the default)\n"
+        "  -o, --occupy       Make the new window occupy the terminal's exact spot\n"
+        "  -f, --full-screen  Start the new window full-screen\n"
+        "  -h, --help         Show this help and exit\n"
+        "\n"
+        "--default and --occupy are mutually exclusive. With no options at all,\n"
+        "--default is used. --x/--y/--width/--length may be used individually or\n"
+        "together to place the window manually; any not given are left to the app/WM.\n"
+        "--full-screen composes with the others rather than replacing them: it's the\n"
+        "geometry the window returns to if full-screen is ever turned off.\n",
+        prog);
+}
 
 static int x_error_handler(Display *dpy, XErrorEvent *e) {
     (void)dpy;
@@ -172,10 +207,54 @@ static void wait_for_window_close(Display *dpy, Window target) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <command> [args...]\n", argv[0]);
+    int have_x = 0, have_y = 0, have_w = 0, have_l = 0;
+    long val_x = 0, val_y = 0, val_w = 0, val_l = 0;
+    int want_default = 0, want_occupy = 0, want_fullscreen = 0;
+
+    int c;
+    char *end;
+    /* Leading '+' stops at the first non-option argument (the command to
+     * launch) instead of permuting the whole argv -- its own flags aren't
+     * ours to parse. */
+    while ((c = getopt_long(argc, argv, "+x:y:w:l:dofh", long_opts, NULL)) != -1) {
+        switch (c) {
+        case 'x':
+            val_x = strtol(optarg, &end, 10);
+            if (*end != '\0') { fprintf(stderr, "swallow: -x/--x requires a numeric argument\n"); return 1; }
+            have_x = 1;
+            break;
+        case 'y':
+            val_y = strtol(optarg, &end, 10);
+            if (*end != '\0') { fprintf(stderr, "swallow: -y/--y requires a numeric argument\n"); return 1; }
+            have_y = 1;
+            break;
+        case 'w':
+            val_w = strtol(optarg, &end, 10);
+            if (*end != '\0') { fprintf(stderr, "swallow: -w/--width requires a numeric argument\n"); return 1; }
+            have_w = 1;
+            break;
+        case 'l':
+            val_l = strtol(optarg, &end, 10);
+            if (*end != '\0') { fprintf(stderr, "swallow: -l/--length requires a numeric argument\n"); return 1; }
+            have_l = 1;
+            break;
+        case 'd': want_default = 1; break;
+        case 'o': want_occupy = 1; break;
+        case 'f': want_fullscreen = 1; break;
+        case 'h': usage(argv[0]); return 0;
+        default: usage(argv[0]); return 1;
+        }
+    }
+
+    if (want_default && want_occupy) {
+        fprintf(stderr, "swallow: --default and --occupy are mutually exclusive\n");
         return 1;
     }
+    if (optind >= argc) {
+        usage(argv[0]);
+        return 1;
+    }
+    char **cmd_argv = &argv[optind];
 
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
@@ -205,8 +284,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (child == 0) {
-        execvp(argv[1], &argv[1]);
-        fprintf(stderr, "swallow: exec %s: %s\n", argv[1], strerror(errno));
+        execvp(cmd_argv[0], cmd_argv);
+        fprintf(stderr, "swallow: exec %s: %s\n", cmd_argv[0], strerror(errno));
         _exit(127);
     }
 
@@ -231,10 +310,38 @@ int main(int argc, char **argv) {
     if (client_h <= 0)
         client_h = term_h;
 
-    /* Make the new window occupy the exact spot the terminal was in. */
-    send_client_message(dpy, target, root, net_moveresize_window,
-                         (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),
-                         term_x, term_y, client_w, client_h);
+    /* Fullscreen is an EWMH *state*, not a geometry override: the WM keeps
+     * track of the window's "normal" geometry underneath it and restores
+     * that if fullscreen is ever toggled off. So the normal-state geometry
+     * below is still set according to --occupy/manual/--default regardless
+     * of --full-screen; fullscreen is layered on top of it, not instead. */
+    if (want_occupy) {
+        /* Make the new window occupy the exact spot the terminal was in. */
+        send_client_message(dpy, target, root, net_moveresize_window,
+                             (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),
+                             term_x, term_y, client_w, client_h);
+    } else if (!want_default && (have_x || have_y || have_w || have_l)) {
+        /* Manual placement: only the axes actually given are forced, so
+         * e.g. --x alone leaves y/width/height to the app/WM. */
+        long flags = (2 << 12);
+        if (have_x) flags |= (1 << 8);
+        if (have_y) flags |= (1 << 9);
+        if (have_w) flags |= (1 << 10);
+        if (have_l) flags |= (1 << 11);
+        send_client_message(dpy, target, root, net_moveresize_window,
+                             flags, val_x, val_y, val_w, val_l);
+    }
+    /* else: --default, or no placement options at all -- leave the WM's
+     * own placement alone. */
+
+    if (want_fullscreen) {
+        Atom net_wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+        Atom net_wm_state_fullscreen = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+        /* _NET_WM_STATE: action=1 (add), property=_NET_WM_STATE_FULLSCREEN,
+         * source indication=2 (pager/tool). */
+        send_client_message(dpy, target, root, net_wm_state,
+                             1, (long)net_wm_state_fullscreen, 0, 2, 0);
+    }
 
     /* Unmapping (rather than iconifying) makes the terminal actually
      * disappear: ICCCM's Normal -> Withdrawn transition, which drops it
