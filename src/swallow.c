@@ -15,11 +15,16 @@
  * breaks on one of these sooner or later; just watching for the next
  * window handles all of them uniformly.
  *
+ * Before hiding, the new window is moved and resized (_NET_MOVERESIZE_WINDOW)
+ * to occupy the terminal's exact screen rectangle, so the app visually
+ * takes the terminal's place rather than appearing wherever the WM's
+ * placement policy would otherwise put it.
+ *
  * The terminal is hidden by unmapping it (ICCCM Normal -> Withdrawn), which
  * drops it from the taskbar/pager entirely -- not just iconify, which would
  * leave a minimized entry behind. It's restored by mapping it again
- * (Withdrawn -> Normal), re-asserting its old position (withdrawing forgets
- * it, so the WM's placement policy would otherwise relocate it), and
+ * (Withdrawn -> Normal), re-asserting its old geometry (withdrawing forgets
+ * it, so the WM's placement policy would otherwise relocate/resize it), and
  * focusing it via _NET_ACTIVE_WINDOW.
  */
 
@@ -74,9 +79,10 @@ static void send_client_message(Display *dpy, Window target, Window root, Atom t
     XSendEvent(dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
 }
 
-/* Root-relative screen position of win, using its decoration frame (the WM
+/* Root-relative screen geometry of win, using its decoration frame (the WM
  * reparents managed windows one level under root) if it has one. */
-static void get_window_position(Display *dpy, Window win, Window root, int *x, int *y) {
+static void get_window_geometry(Display *dpy, Window win, Window root,
+                                 int *x, int *y, int *w, int *h) {
     Window r, parent, *children = NULL;
     unsigned int nchildren = 0;
     Window target = win;
@@ -92,9 +98,35 @@ static void get_window_position(Display *dpy, Window win, Window root, int *x, i
     if (XGetWindowAttributes(dpy, target, &attrs)) {
         *x = attrs.x;
         *y = attrs.y;
+        *w = attrs.width;
+        *h = attrs.height;
     } else {
-        *x = 0;
-        *y = 0;
+        *x = *y = *w = *h = 0;
+    }
+}
+
+/* win's decoration insets (_NET_FRAME_EXTENTS: left, right, top, bottom),
+ * i.e. how much smaller its usable client area is than its full on-screen
+ * footprint. All zero if the WM hasn't published it (e.g. undecorated). */
+static void get_frame_extents(Display *dpy, Window win, Atom net_frame_extents,
+                               int *left, int *right, int *top, int *bottom) {
+    Atom type;
+    int format;
+    unsigned long nitems, after;
+    unsigned char *prop = NULL;
+    *left = *right = *top = *bottom = 0;
+
+    if (XGetWindowProperty(dpy, win, net_frame_extents, 0, 4, False, XA_CARDINAL,
+                            &type, &format, &nitems, &after, &prop) == Success) {
+        if (prop && nitems == 4) {
+            long *vals = (long *)prop;
+            *left = (int)vals[0];
+            *right = (int)vals[1];
+            *top = (int)vals[2];
+            *bottom = (int)vals[3];
+        }
+        if (prop)
+            XFree(prop);
     }
 }
 
@@ -155,6 +187,7 @@ int main(int argc, char **argv) {
     Window root = DefaultRootWindow(dpy);
     Atom net_active_window = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
     Atom net_moveresize_window = XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
+    Atom net_frame_extents = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
 
     Window term_win = get_active_window(dpy, root, net_active_window);
     if (term_win == None) {
@@ -179,11 +212,29 @@ int main(int argc, char **argv) {
 
     Window target = wait_for_target_window(dpy, root);
 
-    /* Withdrawing forgets the window's position with the WM, so remapping
+    /* Withdrawing forgets the window's geometry with the WM, so remapping
      * later re-triggers its placement policy (e.g. re-centering) instead of
      * putting it back where it was -- save it here and re-assert it below. */
-    int term_x, term_y;
-    get_window_position(dpy, term_win, root, &term_x, &term_y);
+    int term_x, term_y, term_w, term_h;
+    get_window_geometry(dpy, term_win, root, &term_x, &term_y, &term_w, &term_h);
+
+    /* _NET_MOVERESIZE_WINDOW's width/height set the *client* area, not the
+     * decorated footprint, so shrink by the terminal's own decoration
+     * insets -- reused below for the terminal's own restore too, since
+     * that's exactly the client size that gets it back to term_w x term_h. */
+    int left, right, top, bottom;
+    get_frame_extents(dpy, term_win, net_frame_extents, &left, &right, &top, &bottom);
+    int client_w = term_w - left - right;
+    int client_h = term_h - top - bottom;
+    if (client_w <= 0)
+        client_w = term_w;
+    if (client_h <= 0)
+        client_h = term_h;
+
+    /* Make the new window occupy the exact spot the terminal was in. */
+    send_client_message(dpy, target, root, net_moveresize_window,
+                         (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),
+                         term_x, term_y, client_w, client_h);
 
     /* Unmapping (rather than iconifying) makes the terminal actually
      * disappear: ICCCM's Normal -> Withdrawn transition, which drops it
@@ -196,9 +247,10 @@ int main(int argc, char **argv) {
     /* ICCCM: Withdrawn -> Normal is done simply by mapping the window again. */
     XMapWindow(dpy, term_win);
     /* _NET_MOVERESIZE_WINDOW: gravity 0 (use the window's own), source
-     * indication 2 (pager/tool), x and y present (bits 8-9), no w/h. */
+     * indication 2 (pager/tool), x/y/width/height all present (bits 8-11). */
     send_client_message(dpy, term_win, root, net_moveresize_window,
-                         (2 << 12) | (1 << 8) | (1 << 9), term_x, term_y, 0, 0);
+                         (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),
+                         term_x, term_y, client_w, client_h);
     send_client_message(dpy, term_win, root, net_active_window, 2, 0, 0, 0, 0);
     XFlush(dpy);
 

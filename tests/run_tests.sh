@@ -64,9 +64,25 @@ window_mapped() {
     DISPLAY=":$XDISP" xwininfo -id "$1" 2>/dev/null | grep -q "IsViewable"
 }
 
-window_pos() {
+window_geom() {
     DISPLAY=":$XDISP" xdotool getwindowgeometry --shell "$1" 2>/dev/null \
-        | sed -n 's/^X=\(.*\)/\1/p;s/^Y=\(.*\)/\1/p' | paste -sd, -
+        | sed -n 's/^X=\(.*\)/\1/p;s/^Y=\(.*\)/\1/p;s/^WIDTH=\(.*\)/\1/p;s/^HEIGHT=\(.*\)/\1/p' \
+        | paste -sd, -
+}
+
+# geom_close g1 g2 tol: true if every component (x,y,w,h) of two
+# "x,y,w,h" strings is within tol of the other. Decorations can differ by a
+# few pixels between window types/themes, so exact equality isn't realistic.
+geom_close() {
+    local IFS=,
+    local -a a=($1) b=($2)
+    local tol="$3" i diff
+    for i in 0 1 2 3; do
+        diff=$(( a[i] - b[i] ))
+        [ "$diff" -lt 0 ] && diff=$(( -diff ))
+        [ "$diff" -gt "$tol" ] && return 1
+    done
+    return 0
 }
 
 # --- start a private X server + WM ------------------------------------
@@ -106,7 +122,21 @@ wait_for 10 bash -c \
 #      taskbar/pager entry)
 #   2. killing the app window restores the terminal, in the same place
 verify_swallow_behavior() {
-    local desc="$1" term_win="$2" app_win="$3" term_pos_before="$4" swallow_pid="$5"
+    local desc="$1" term_win="$2" app_win="$3" term_geom_before="$4" swallow_pid="$5"
+
+    local app_geom
+    local ticks=10
+    while [ "$ticks" -gt 0 ]; do
+        app_geom="$(window_geom "$app_win")"
+        geom_close "$app_geom" "$term_geom_before" 20 && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if geom_close "$app_geom" "$term_geom_before" 20; then
+        pass "$desc: app window took the terminal's place ($app_geom ~ $term_geom_before)"
+    else
+        fail "$desc: app window geometry ($app_geom) doesn't match terminal's ($term_geom_before)"
+    fi
 
     local ticks=15
     while [ "$ticks" -gt 0 ]; do
@@ -146,18 +176,18 @@ verify_swallow_behavior() {
         fail "$desc: terminal was not restored"
     fi
 
-    local term_pos_after
-    term_pos_after="$(window_pos "$term_win")"
-    if [ "$term_pos_after" = "$term_pos_before" ]; then
-        pass "$desc: terminal kept its position ($term_pos_before)"
+    local term_geom_after
+    term_geom_after="$(window_geom "$term_win")"
+    if [ "$term_geom_after" = "$term_geom_before" ]; then
+        pass "$desc: terminal kept its geometry ($term_geom_before)"
     else
-        fail "$desc: terminal moved (was $term_pos_before, now $term_pos_after)"
+        fail "$desc: terminal geometry changed (was $term_geom_before, now $term_geom_after)"
     fi
 }
 
-# Sets up a terminal window, activates it, and moves it somewhere
-# deliberately non-default so a later position check is meaningful. Prints
-# "term_win,term_pos_before" on success, nothing on failure.
+# Sets up a terminal window, activates it, and moves/sizes it to something
+# deliberately non-default so later geometry checks are meaningful. Prints
+# "term_win,term_geom_before|xterm_pid" on success, nothing on failure.
 setup_terminal() {
     local desc="$1" term_title="$2"
 
@@ -182,8 +212,9 @@ setup_terminal() {
 
     DISPLAY=":$XDISP" xdotool windowactivate --sync "$term_win" >/dev/null 2>&1
     DISPLAY=":$XDISP" xdotool windowmove "$term_win" 60 70 >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool windowsize "$term_win" 500 350 >/dev/null 2>&1
     sleep 0.3
-    echo "$term_win,$(window_pos "$term_win")|$xterm_pid"
+    echo "$term_win,$(window_geom "$term_win")|$xterm_pid"
     return 0
 }
 
@@ -195,10 +226,10 @@ run_scenario() {
 
     log "Scenario: $desc"
 
-    local setup term_win term_pos_before xterm_pid
+    local setup term_win term_geom_before xterm_pid
     setup="$(setup_terminal "$desc" "$term_title")" || return
     term_win="${setup%%,*}"
-    term_pos_before="${setup#*,}"; term_pos_before="${term_pos_before%%|*}"
+    term_geom_before="${setup#*,}"; term_geom_before="${term_geom_before%%|*}"
     xterm_pid="${setup##*|}"
 
     DISPLAY=":$XDISP" "$@" "$SWALLOW" xmessage -title "$app_title" -center "hello from $desc" \
@@ -221,7 +252,7 @@ run_scenario() {
     fi
     pass "$desc: app window appeared"
 
-    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_pos_before" "$swallow_pid"
+    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_geom_before" "$swallow_pid"
 
     kill "$xterm_pid" >/dev/null 2>&1
     wait "$xterm_pid" 2>/dev/null
@@ -243,10 +274,10 @@ run_detached_scenario() {
 
     log "Scenario: $desc"
 
-    local setup term_win term_pos_before xterm_pid
+    local setup term_win term_geom_before xterm_pid
     setup="$(setup_terminal "$desc" "$term_title")" || return
     term_win="${setup%%,*}"
-    term_pos_before="${setup#*,}"; term_pos_before="${term_pos_before%%|*}"
+    term_geom_before="${setup#*,}"; term_geom_before="${term_geom_before%%|*}"
     xterm_pid="${setup##*|}"
 
     mkfifo "$fifo" 2>/dev/null
@@ -277,7 +308,7 @@ run_detached_scenario() {
     fi
     pass "$desc: app window appeared"
 
-    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_pos_before" "$swallow_pid"
+    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_geom_before" "$swallow_pid"
 
     kill "$xterm_pid" "$daemon_pid" >/dev/null 2>&1
     wait "$xterm_pid" 2>/dev/null
