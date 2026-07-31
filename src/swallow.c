@@ -5,30 +5,31 @@
  * Usage: swallow <command> [args...]
  *
  * The terminal is whatever window is active (_NET_ACTIVE_WINDOW) when
- * swallow starts. The launched command is put in its own process group; any
- * new top-level window is matched against that group via XRes
- * (XResQueryClientIds), which maps a window straight to its owning PID.
- * Matching on the process group rather than the launched PID itself is what
- * makes this survive apps that fork+exec (launcher scripts, double-fork
- * daemonizing): the process swallow started can exit and reparent to init
- * before the real window ever appears, but its process group id doesn't
- * change, so the window it eventually creates still matches.
+ * swallow starts. The launched command's window is simply the next new
+ * top-level window to be created and mapped after that. This deliberately
+ * doesn't try to match it to the launched process's PID: plenty of apps
+ * hand the real work off to something with no process relationship to what
+ * was just exec'd at all -- fork+exec launchers, double-fork daemonizing,
+ * or (e.g. Kate, via kdeinit/D-Bus single-instance activation) an
+ * unrelated, already-running process entirely. Any PID-based heuristic
+ * breaks on one of these sooner or later; just watching for the next
+ * window handles all of them uniformly.
  *
  * The terminal is hidden by unmapping it (ICCCM Normal -> Withdrawn), which
  * drops it from the taskbar/pager entirely -- not just iconify, which would
  * leave a minimized entry behind. It's restored by mapping it again
- * (Withdrawn -> Normal) and focusing it via _NET_ACTIVE_WINDOW.
+ * (Withdrawn -> Normal), re-asserting its old position (withdrawing forgets
+ * it, so the WM's placement policy would otherwise relocate it), and
+ * focusing it via _NET_ACTIVE_WINDOW.
  */
 
 #define _DEFAULT_SOURCE
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
-#include <X11/extensions/XRes.h>
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -38,52 +39,6 @@ static int x_error_handler(Display *dpy, XErrorEvent *e) {
     (void)dpy;
     (void)e;
     return 0; /* don't let a stray error (e.g. a since-destroyed window) kill us */
-}
-
-static pid_t get_pgid_of_pid(pid_t pid) {
-    char path[64], buf[4096];
-    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    if (n == 0)
-        return -1;
-    buf[n] = '\0';
-
-    /* Fields: pid (comm) state ppid pgrp ...  comm may contain spaces/parens. */
-    char *paren = strrchr(buf, ')');
-    int pgrp;
-    if (!paren || sscanf(paren + 1, "%*s %*d %d", &pgrp) != 1)
-        return -1;
-    return (pid_t)pgrp;
-}
-
-/* Ask the X server which PID owns a window's connection. */
-static pid_t query_window_pid(Display *dpy, Window w) {
-    XResClientIdSpec spec = {.client = w, .mask = XRES_CLIENT_ID_PID_MASK};
-    long num_ids = 0;
-    XResClientIdValue *ids = NULL;
-
-    /* Unlike most Xlib Status-returning calls, success here is 0 (X core
-     * protocol Success); the return value isn't a reliable failure signal. */
-    XResQueryClientIds(dpy, 1, &spec, &num_ids, &ids);
-    if (!ids)
-        return -1;
-
-    pid_t pid = -1;
-    for (long i = 0; i < num_ids; i++) {
-        if (ids[i].spec.mask & XRES_CLIENT_ID_PID_MASK) {
-            pid_t p = XResGetClientPid(&ids[i]);
-            if (p > 0) {
-                pid = p;
-                break;
-            }
-        }
-    }
-    XResClientIdsDestroy(num_ids, ids);
-    return pid;
 }
 
 static Window get_active_window(Display *dpy, Window root, Atom net_active_window) {
@@ -143,12 +98,11 @@ static void get_window_position(Display *dpy, Window win, Window root, int *x, i
     }
 }
 
-/* Wait for a top-level window whose owning process is in target_pgid to be
- * created and mapped. This blocks indefinitely by design: the process
- * swallow directly launched may already be gone (reparented to init) by
- * the time the real window shows up, so there's no exit condition to race
- * against other than the window itself appearing. */
-static Window wait_for_target_window(Display *dpy, Window root, pid_t target_pgid) {
+/* Wait for the next top-level window to be created and mapped. Blocks
+ * indefinitely: whatever swallow launched may exit long before the real
+ * window shows up (see file header comment), so there's no exit condition
+ * to race against other than a window actually appearing. */
+static Window wait_for_target_window(Display *dpy, Window root) {
     Window candidates[MAX_CANDIDATES];
     int ncandidates = 0;
 
@@ -159,10 +113,6 @@ static Window wait_for_target_window(Display *dpy, Window root, pid_t target_pgi
         if (ev.type == CreateNotify) {
             XCreateWindowEvent *ce = &ev.xcreatewindow;
             if (ce->parent != root || ce->override_redirect)
-                continue;
-
-            pid_t pid = query_window_pid(dpy, ce->window);
-            if (pid <= 0 || get_pgid_of_pid(pid) != target_pgid)
                 continue;
 
             if (ncandidates < MAX_CANDIDATES) {
@@ -202,12 +152,6 @@ int main(int argc, char **argv) {
     }
     XSetErrorHandler(x_error_handler);
 
-    int ev_base, err_base;
-    if (!XResQueryExtension(dpy, &ev_base, &err_base)) {
-        fprintf(stderr, "swallow: X Resource (XRes) extension not available\n");
-        return 1;
-    }
-
     Window root = DefaultRootWindow(dpy);
     Atom net_active_window = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
     Atom net_moveresize_window = XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
@@ -228,13 +172,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (child == 0) {
-        setpgid(0, 0); /* own process group: see file header comment */
         execvp(argv[1], &argv[1]);
         fprintf(stderr, "swallow: exec %s: %s\n", argv[1], strerror(errno));
         _exit(127);
     }
 
-    Window target = wait_for_target_window(dpy, root, /* target_pgid = */ child);
+    Window target = wait_for_target_window(dpy, root);
 
     /* Withdrawing forgets the window's position with the WM, so remapping
      * later re-triggers its placement policy (e.g. re-centering) instead of

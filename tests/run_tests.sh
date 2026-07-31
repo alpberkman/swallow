@@ -100,67 +100,15 @@ wait_for 10 bash -c \
     exit 1
 }
 
-# --- test scenario ------------------------------------------------------
-# Launches `swallow $*` "from" a terminal window (the currently active
-# window), then verifies:
-#   1. the app window appears and the terminal disappears (unmapped, not
-#      just minimized -- no leftover taskbar/pager entry)
+# --- shared assertions ---------------------------------------------------
+# Given a swallow run already in flight (app window found), verifies:
+#   1. the terminal disappears (unmapped, not just minimized -- no leftover
+#      taskbar/pager entry)
 #   2. killing the app window restores the terminal, in the same place
-run_scenario() {
-    local desc="$1"; shift
-    local term_title="SwallowTestTerm-$$-$RANDOM"
-    local app_title="SwallowTestApp-$$-$RANDOM"
+verify_swallow_behavior() {
+    local desc="$1" term_win="$2" app_win="$3" term_pos_before="$4" swallow_pid="$5"
 
-    log "Scenario: $desc"
-
-    DISPLAY=":$XDISP" xterm -title "$term_title" -e "sh -c 'while :; do sleep 3600; done'" \
-        >/tmp/swallow-test-xterm.log 2>&1 &
-    local xterm_pid=$!
-    CLEANUP_PIDS+=("$xterm_pid")
-
-    local term_win=""
-    local ticks=50
-    while [ -z "$term_win" ] && [ "$ticks" -gt 0 ]; do
-        term_win="$(find_window "$term_title")"
-        [ -n "$term_win" ] && break
-        ticks=$((ticks - 1))
-        sleep 0.2
-    done
-    if [ -z "$term_win" ]; then
-        fail "$desc: terminal window never appeared"
-        kill "$xterm_pid" >/dev/null 2>&1
-        return
-    fi
-
-    DISPLAY=":$XDISP" xdotool windowactivate --sync "$term_win" >/dev/null 2>&1
-    # Move it off whatever openbox's default placement would pick, so a
-    # position check after restore is actually meaningful.
-    DISPLAY=":$XDISP" xdotool windowmove "$term_win" 60 70 >/dev/null 2>&1
-    sleep 0.3
-    local term_pos_before
-    term_pos_before="$(window_pos "$term_win")"
-
-    DISPLAY=":$XDISP" "$@" "$SWALLOW" xmessage -title "$app_title" -center "hello from $desc" \
-        >/tmp/swallow-test-run.log 2>&1 &
-    local swallow_pid=$!
-    CLEANUP_PIDS+=("$swallow_pid")
-
-    local app_win=""
-    ticks=50
-    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
-        app_win="$(find_window "$app_title")"
-        [ -n "$app_win" ] && break
-        ticks=$((ticks - 1))
-        sleep 0.2
-    done
-    if [ -z "$app_win" ]; then
-        fail "$desc: app window never appeared"
-        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
-        return
-    fi
-    pass "$desc: app window appeared"
-
-    ticks=15
+    local ticks=15
     while [ "$ticks" -gt 0 ]; do
         window_mapped "$term_win" || break
         ticks=$((ticks - 1))
@@ -205,13 +153,140 @@ run_scenario() {
     else
         fail "$desc: terminal moved (was $term_pos_before, now $term_pos_after)"
     fi
+}
+
+# Sets up a terminal window, activates it, and moves it somewhere
+# deliberately non-default so a later position check is meaningful. Prints
+# "term_win,term_pos_before" on success, nothing on failure.
+setup_terminal() {
+    local desc="$1" term_title="$2"
+
+    DISPLAY=":$XDISP" xterm -title "$term_title" -e "sh -c 'while :; do sleep 3600; done'" \
+        >/tmp/swallow-test-xterm.log 2>&1 &
+    local xterm_pid=$!
+    CLEANUP_PIDS+=("$xterm_pid")
+
+    local term_win=""
+    local ticks=50
+    while [ -z "$term_win" ] && [ "$ticks" -gt 0 ]; do
+        term_win="$(find_window "$term_title")"
+        [ -n "$term_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$term_win" ]; then
+        fail "$desc: terminal window never appeared"
+        kill "$xterm_pid" >/dev/null 2>&1
+        return 1
+    fi
+
+    DISPLAY=":$XDISP" xdotool windowactivate --sync "$term_win" >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool windowmove "$term_win" 60 70 >/dev/null 2>&1
+    sleep 0.3
+    echo "$term_win,$(window_pos "$term_win")|$xterm_pid"
+    return 0
+}
+
+# --- scenario: normal exec, and fork+exec (double-fork daemonize) --------
+run_scenario() {
+    local desc="$1"; shift
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    local setup term_win term_pos_before xterm_pid
+    setup="$(setup_terminal "$desc" "$term_title")" || return
+    term_win="${setup%%,*}"
+    term_pos_before="${setup#*,}"; term_pos_before="${term_pos_before%%|*}"
+    xterm_pid="${setup##*|}"
+
+    DISPLAY=":$XDISP" "$@" "$SWALLOW" xmessage -title "$app_title" -center "hello from $desc" \
+        >/tmp/swallow-test-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+    pass "$desc: app window appeared"
+
+    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_pos_before" "$swallow_pid"
 
     kill "$xterm_pid" >/dev/null 2>&1
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: detached launcher (D-Bus/kdeinit single-instance style) ---
+# Reproduces the Kate case: swallow launches a short-lived "stub" that hands
+# the real work off to a pre-existing, independent process sharing no
+# process-tree relationship with swallow's child at all (stood in for here
+# by a small daemon reading requests off a fifo, started before swallow
+# ever runs). No PID/pgid heuristic can identify that daemon's window as
+# "belonging" to what swallow launched -- this is what motivated matching
+# on window creation order instead.
+run_detached_scenario() {
+    local desc="detached launcher (D-Bus/kdeinit single-instance style)"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+    local fifo="/tmp/swallow-test-fifo-$$"
+
+    log "Scenario: $desc"
+
+    local setup term_win term_pos_before xterm_pid
+    setup="$(setup_terminal "$desc" "$term_title")" || return
+    term_win="${setup%%,*}"
+    term_pos_before="${setup#*,}"; term_pos_before="${term_pos_before%%|*}"
+    xterm_pid="${setup##*|}"
+
+    mkfifo "$fifo" 2>/dev/null
+    ( while read -r line; do DISPLAY=":$XDISP" sh -c "$line" & done < "$fifo" ) &
+    local daemon_pid=$!
+    CLEANUP_PIDS+=("$daemon_pid")
+
+    # The "stub": like kate's real binary, forwards the request to the
+    # unrelated daemon above (standing in for D-Bus) and exits immediately.
+    DISPLAY=":$XDISP" "$SWALLOW" sh -c "echo 'xmessage -title \"$app_title\" -center hi' > $fifo" \
+        >/tmp/swallow-test-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" "$daemon_pid" >/dev/null 2>&1
+        rm -f "$fifo"
+        return
+    fi
+    pass "$desc: app window appeared"
+
+    verify_swallow_behavior "$desc" "$term_win" "$app_win" "$term_pos_before" "$swallow_pid"
+
+    kill "$xterm_pid" "$daemon_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+    rm -f "$fifo"
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
+run_detached_scenario
 
 log ""
 log "Results: $PASS passed, $FAIL failed"
