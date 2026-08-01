@@ -6,6 +6,14 @@ restores the terminal (position + size) when the app's window closes — or,
 with `--remain`, moves the terminal to wherever the app's window ended up
 instead.
 
+This repo also has an independent i3/sway-specific implementation in
+`swallow-i3/` (a bash script built on i3/sway IPC instead of raw X11 — see
+`swallow-i3/README.md`), and `swallow-auto.sh` at the root, which picks
+between the two based on which WM is actually running so callers don't
+need WM-specific logic of their own. Everything below (build/install/test,
+mechanism notes) is about the C tool; the i3/sway script doesn't share
+code or a build system with it.
+
 ## Build / install / test
 
 ```

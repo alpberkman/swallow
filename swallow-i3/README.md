@@ -115,9 +115,10 @@ already points at (a real, already-running one) -- useful for testing
 under sway, since sway has no Xephyr-nestable equivalent in this suite.
 
 `test-i3.sh` is written generically against any `swallow-*` binary or
-script, not just `swallow-i3.sh` -- see its own comments for which
-scenarios are expected to pass or fail for plain `swallow` when run the
-same way.
+script, not just `swallow-i3.sh` -- e.g. `./test-i3.sh --xephyr
+../swallow/bin/swallow` runs it against the C version instead. See the
+script's own comments for which scenarios are expected to pass or fail for
+plain `swallow` when run that way.
 
 ## Note
 
