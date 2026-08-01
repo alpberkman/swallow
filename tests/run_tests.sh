@@ -887,6 +887,96 @@ run_occupy_flash_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --occupy must not flash through a real app's own pre-map
+# resize --
+# run_occupy_flash_scenario (above) uses xmessage, which turned out to never
+# actually trigger this: it computes its size once, in XCreateWindow itself,
+# with nothing afterward to race. Real toolkit apps (Qt/GTK -- zathura, kate,
+# pcmanfm all confirmed via create_trace_helper) instead create small and
+# then explicitly resize themselves to fit their content sometime between
+# CreateNotify and their own XMapWindow -- landing after
+# apply_pre_map_placement's XConfigureWindow and silently overriding it, so
+# the window mapped at its own natural size (e.g. zathura's 800x600) first
+# and only snapped to the requested spot an instant later. This is what
+# apply_pre_map_placement's WM_NORMAL_HINTS PMinSize/PMaxSize pin (not just
+# PSize) fixes, by making the WM clamp the app's own resize too, not just
+# swallow's.
+#
+# Unlike run_occupy_flash_scenario, this doesn't fail on seeing more than one
+# distinct pre-map size -- a real app's own pre-map churn (confirmed
+# harmless: it's still invisible, since the window isn't mapped yet) is
+# expected and fine. What matters is whether the size it's *actually mapped
+# at* already matches the size it settles at afterward -- if those differ,
+# the window was visibly resized after already being on screen, i.e. a real
+# flash. Optional: skipped if the given app isn't installed.
+run_real_app_occupy_flash_scenario() {
+    local desc="$1" wm_class="$2"; shift 2
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local trace_log="/tmp/swallow-test-real-flash-$$.log"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" xterm_pid="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$CREATE_TRACE_HELPER" >"$trace_log" 2>&1 &
+    local trace_pid=$!
+    CLEANUP_PIDS+=("$trace_pid")
+    sleep 0.3
+
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy --timeout 30 "$@" \
+        >/tmp/swallow-test-real-flash-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win="" ticks=100
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window_by_class "$wm_class")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$trace_pid" "$xterm_pid" >/dev/null 2>&1
+        rm -f "$trace_log"
+        return
+    fi
+    sleep 0.5
+
+    DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+    wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null" >/dev/null
+    sleep 0.3
+    kill "$trace_pid" >/dev/null 2>&1
+    wait "$trace_pid" 2>/dev/null
+
+    local sizes
+    sizes="$(awk -v id="$app_win" '
+        $1 == "configure" && $2 == id {
+            split($3, g, ",")
+            if (g[3] > 1 && g[4] > 1) {
+                last = g[3] "," g[4]
+                if (!mapped) at_map = last
+            }
+        }
+        $1 == "map" && $2 == id { mapped = 1; at_map = last }
+        END { print at_map, last }
+    ' "$trace_log")"
+    local size_at_map size_final
+    size_at_map="$(echo "$sizes" | cut -d' ' -f1)"
+    size_final="$(echo "$sizes" | cut -d' ' -f2)"
+
+    if [ -n "$size_at_map" ] && [ "$size_at_map" = "$size_final" ]; then
+        pass "$desc: app window was already at its final size ($size_at_map) when mapped"
+    else
+        fail "$desc: app window was mapped at $size_at_map but settled at $size_final -- occupy flash regressed"
+    fi
+
+    rm -f "$trace_log"
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 # --- scenario: --help is pipeable/pageable (goes to stdout, not stderr) ----
 # usage()/--help used to always go to stderr, indistinguishable from a usage
 # error and unusable with `swallow --help | less`. Checks the help text
@@ -977,14 +1067,18 @@ run_bad_command_scenario
 
 if command -v zathura >/dev/null 2>&1; then
     run_real_app_scenario "zathura (real app)" zathura zathura
+    run_real_app_occupy_flash_scenario "zathura occupy flash (real app)" zathura zathura
 else
     log "Scenario: zathura (real app) -- SKIPPED (zathura not installed)"
+    log "Scenario: zathura occupy flash (real app) -- SKIPPED (zathura not installed)"
 fi
 
 if command -v kate >/dev/null 2>&1; then
     run_real_app_scenario "kate (real app)" kate kate
+    run_real_app_occupy_flash_scenario "kate occupy flash (real app)" kate kate
 else
     log "Scenario: kate (real app) -- SKIPPED (kate not installed)"
+    log "Scenario: kate occupy flash (real app) -- SKIPPED (kate not installed)"
 fi
 
 log ""

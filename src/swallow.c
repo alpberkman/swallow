@@ -258,9 +258,29 @@ static void apply_pre_map_placement(Display *dpy, Window win, const placement_t 
             hints.y = pl->y;
         }
         if (pl->set_w && pl->set_h) {
-            hints.flags |= PSize;
+            /* PMinSize/PMaxSize (not just PSize) pinned to the same value:
+             * real toolkits (confirmed via create_trace_helper against
+             * zathura, kate, pcmanfm) routinely issue their own resize, to
+             * fit their content, sometime between CreateNotify and their own
+             * XMapWindow -- landing after the XConfigureWindow above and
+             * overriding it, so the window would otherwise still map at its
+             * own natural size first (e.g. zathura's 800x600) and only snap
+             * to the requested one an instant later, a visible flash. PSize
+             * alone doesn't stop this -- it's an initial-placement hint, not
+             * a constraint the app's own subsequent requests get checked
+             * against. Pinning min==max forces the WM to clamp *any* resize
+             * request -- the app's included -- to this size for as long as
+             * the pin holds, which covers exactly the pre-map window that
+             * matters here. It doesn't last: apps set their own real
+             * WM_NORMAL_HINTS shortly after mapping (their actual min size,
+             * no max), superseding this and leaving the window freely
+             * resizable again -- confirmed by resizing a swallowed zathura
+             * window immediately after launch. */
+            hints.flags |= PSize | PMinSize | PMaxSize;
             hints.width = pl->w;
             hints.height = pl->h;
+            hints.min_width = hints.max_width = pl->w;
+            hints.min_height = hints.max_height = pl->h;
         }
         XSetWMNormalHints(dpy, win, &hints);
     }
