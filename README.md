@@ -3,6 +3,12 @@
 A minimal X11 command-line tool for Linux: when launching a GUI application from a terminal, make the terminal window swallow the GUI. Placement of the the GUI application and the terminal can be partly be controlled by the options. However it is conclusively decided by the window manager. Targets Openbox, but relies only on standard ICCCM/EWMH conventions, so it
 should work with any reasonably-compliant reparenting window manager.
 
+If you use i3 or sway, see [`swallow-i3/`](swallow-i3/README.md) for an
+alternative implementation built on their IPC instead -- and
+[`swallow-auto.sh`](swallow-auto.sh) below, which picks between the two
+automatically depending on which WM is actually running, so you can use
+one setup across both.
+
 ## Requirements
 
 - Xlib (`libx11`, `libx11-dev` / `libX11-devel` depending on distro)
@@ -30,9 +36,18 @@ Installs three commands: `swallow` itself, `swallow-auto` (picks between
 `swallow-auto.sh`), and `swallow-i3` (the i3/sway-specific script in
 `swallow-i3/`, copied in as-is -- it has no build step of its own).
 
+It also sets up [shell integration](#shell-integration) in `~/.bashrc`:
+an empty `SWALLOW_APPS=()` line, a default `SWALLOW_FLAGS=...` line, and a
+`source` line for `shell-integration.sh`, all added only if not already
+present -- safe to run `make install` again later without losing edits
+you've made to either line.
+
 ```sh
 make uninstall
 ```
+
+`uninstall` removes the three installed commands but leaves your
+`~/.bashrc` edits alone.
 
 ## Usage
 
@@ -85,6 +100,28 @@ Notes:
 - `--timeout` guards against a command that never opens a window (a typo'd
   binary, a crash on startup, a non-GUI command) -- without it, `swallow`
   would otherwise wait forever. However some applications might take a very long time to initialize their GUI (especially Java programs and IDEs) so having a very short timeout might prevent swallow to hide the terminal.
+
+## Shell integration
+
+`shell-integration.sh` wraps a fixed list of GUI apps in bash functions so
+you can just type `kate somefile.txt` instead of `swallow --occupy
+--remain --timeout 3 kate somefile.txt` every time. `make install` sets
+this up in `~/.bashrc` for you:
+
+```sh
+SWALLOW_APPS=()
+SWALLOW_FLAGS="--remain --occupy --timeout 3"
+source /path/to/swallow/shell-integration.sh
+```
+
+Fill in `SWALLOW_APPS` with whatever you want wrapped, e.g.
+`SWALLOW_APPS=(kate gimp mpv feh zathura)`, and adjust `SWALLOW_FLAGS` to
+taste. Each app in the list gets a same-named bash function that shadows
+the real binary for interactive shell use only (`.desktop` launchers and
+scripts calling the binary directly are unaffected; use `command kate` to
+bypass the wrapper). The functions call `swallow-auto`, not `swallow`
+directly, so the same setup works whether you're running Openbox, i3, or
+sway that session -- see `swallow-auto.sh`.
 
 ## How it works
 

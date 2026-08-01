@@ -20,6 +20,7 @@ I3SRC    := swallow-i3/swallow-i3.sh
 
 BASHRC              := $(HOME)/.bashrc
 SWALLOW_APPS_LINE    := SWALLOW_APPS=()
+SWALLOW_FLAGS_LINE   := SWALLOW_FLAGS="--remain --occupy --timeout 3"
 SHELL_INTEGRATION    := $(CURDIR)/shell-integration.sh
 SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
@@ -43,17 +44,20 @@ clean:
 # happens to live. grep -qxF guards against appending the same line again
 # on repeat installs.
 #
-# SWALLOW_APPS=() is added above it (only if no SWALLOW_APPS= assignment
-# exists at all yet -- a plain -qxF check would re-add the empty line
-# every time and stomp whatever apps were since filled in) as somewhere
-# for you to list the apps shell-integration.sh should wrap; it's your
-# .bashrc from here, not this repo's.
+# SWALLOW_APPS=() and a default SWALLOW_FLAGS=... are added above it (each
+# only if no assignment to that name exists at all yet -- a plain -qxF
+# check would re-add them every time and stomp whatever was since edited)
+# as somewhere for you to list the apps shell-integration.sh should wrap
+# and the flags to launch them with; it's your .bashrc from here, not this
+# repo's.
 install: $(BIN)
 	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
 	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
 	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
 	grep -qE '^SWALLOW_APPS=' $(BASHRC) 2>/dev/null || \
 		echo '$(SWALLOW_APPS_LINE)' >> $(BASHRC)
+	grep -qE '^SWALLOW_FLAGS=' $(BASHRC) 2>/dev/null || \
+		echo '$(SWALLOW_FLAGS_LINE)' >> $(BASHRC)
 	grep -qxF '$(SHELL_INTEGRATION_LINE)' $(BASHRC) 2>/dev/null || \
 		echo '$(SHELL_INTEGRATION_LINE)' >> $(BASHRC)
 

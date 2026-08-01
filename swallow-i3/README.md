@@ -12,6 +12,11 @@ on-screen rect) via i3's own tree/container model.
 Because it's plain bash, it needs no build step -- there's no C compiler or
 libX11 involved for this version.
 
+If you move between i3/sway and other window managers, `../swallow-auto.sh`
+picks between this script and `swallow` automatically based on what's
+actually running, so you don't need separate setups per WM -- see the main
+`../README.md`'s "Shell integration" section.
+
 ## Requirements
 
 - `bash`
@@ -22,8 +27,11 @@ libX11 involved for this version.
 
 ## Install
 
-There's nothing to build. Make it executable and put it on your `PATH`,
-however you like, for example:
+There's nothing to build. The simplest route is the repo's top-level
+`make install` (see the main `../README.md`), which installs this as
+`swallow-i3` alongside `swallow` and `swallow-auto` and wires up shell
+integration for you. To install just this script standalone instead, make
+it executable and put it on your `PATH` however you like, e.g.:
 
 ```sh
 chmod +x swallow-i3.sh
@@ -116,9 +124,9 @@ under sway, since sway has no Xephyr-nestable equivalent in this suite.
 
 `test-i3.sh` is written generically against any `swallow-*` binary or
 script, not just `swallow-i3.sh` -- e.g. `./test-i3.sh --xephyr
-../swallow/bin/swallow` runs it against the C version instead. See the
-script's own comments for which scenarios are expected to pass or fail for
-plain `swallow` when run that way.
+../bin/swallow` runs it against the C version instead. See the script's
+own comments for which scenarios are expected to pass or fail for plain
+`swallow` when run that way.
 
 ## Note
 
