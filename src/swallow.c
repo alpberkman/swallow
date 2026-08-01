@@ -243,24 +243,30 @@ static Window wait_for_target_window(Display *dpy, Window root, long timeout_sec
 }
 
 /* Waits for target to close. If track_geometry is set, also keeps the
- * out_x, out_y, out_w, out_h outputs updated to target's current on-screen
- * frame geometry as it changes (--remain), by re-deriving it via
- * get_window_geometry() on every ConfigureNotify target gets -- rather than
+ * out_x, out_y, out_w, out_h, out_left/right/top/bottom outputs updated to
+ * target's current on-screen frame geometry and decoration insets as they
+ * change (--remain), by re-deriving them via get_window_geometry()/
+ * get_frame_extents() on every ConfigureNotify target gets -- rather than
  * trusting the event's own x/y/width/height, since those are parent-relative
  * unless the WM happened to send a synthetic (root-relative) one, and
  * get_window_geometry() already does the reparenting-aware lookup correctly
  * regardless of which kind arrived. By the time DestroyNotify fires the
  * window is gone and can't be queried anymore, hence tracking as we go
- * rather than at close time. */
-static void wait_for_window_close(Display *dpy, Window root, Window target, int track_geometry,
-                                   int *out_x, int *out_y, int *out_w, int *out_h) {
+ * rather than at close time. Insets are tracked alongside geometry (not
+ * just queried once) because they may not be published yet at the moment
+ * target is first seen -- e.g. right after the WM has just reparented it. */
+static void wait_for_window_close(Display *dpy, Window root, Window target, Atom net_frame_extents,
+                                   int track_geometry, int *out_x, int *out_y, int *out_w, int *out_h,
+                                   int *out_left, int *out_right, int *out_top, int *out_bottom) {
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         if (ev.type == DestroyNotify && ev.xdestroywindow.window == target)
             return;
-        if (track_geometry && ev.type == ConfigureNotify && ev.xconfigure.window == target)
+        if (track_geometry && ev.type == ConfigureNotify && ev.xconfigure.window == target) {
             get_window_geometry(dpy, target, root, out_x, out_y, out_w, out_h);
+            get_frame_extents(dpy, target, net_frame_extents, out_left, out_right, out_top, out_bottom);
+        }
     }
 }
 
@@ -413,13 +419,17 @@ int main(int argc, char **argv) {
                              1, (long)net_wm_state_fullscreen, 0, 2, 0);
     }
 
-    /* --remain: track target's geometry as it moves/resizes so that, once it
-     * closes, the terminal can take its place instead of its own old spot.
-     * Seeded here (rather than left zeroed) in case target closes before its
-     * first ConfigureNotify ever arrives. */
+    /* --remain: track target's geometry (and its own decoration insets --
+     * see below) as it moves/resizes, so that once it closes the terminal
+     * can take its place instead of its own old spot. Seeded here (rather
+     * than left zeroed) in case target closes before its first
+     * ConfigureNotify ever arrives. */
     int remain_x = term_x, remain_y = term_y, remain_w = term_w, remain_h = term_h;
-    if (want_remain)
+    int remain_left = left, remain_right = right, remain_top = top, remain_bottom = bottom;
+    if (want_remain) {
         get_window_geometry(dpy, target, root, &remain_x, &remain_y, &remain_w, &remain_h);
+        get_frame_extents(dpy, target, net_frame_extents, &remain_left, &remain_right, &remain_top, &remain_bottom);
+    }
 
     /* Unmapping (rather than iconifying) makes the terminal actually
      * disappear: ICCCM's Normal -> Withdrawn transition, which drops it
@@ -427,28 +437,69 @@ int main(int argc, char **argv) {
     XUnmapWindow(dpy, term_win);
     XFlush(dpy);
 
-    wait_for_window_close(dpy, root, target, want_remain, &remain_x, &remain_y, &remain_w, &remain_h);
+    wait_for_window_close(dpy, root, target, net_frame_extents, want_remain,
+                           &remain_x, &remain_y, &remain_w, &remain_h,
+                           &remain_left, &remain_right, &remain_top, &remain_bottom);
 
     /* Restore geometry: target's last-known spot for --remain, otherwise the
-     * terminal's own original spot. Both are frame footprints, so both need
-     * the same frame-extents-to-client-size conversion as client_w/client_h
-     * above -- using the terminal's own insets either way, since it's the
-     * terminal being placed. */
+     * terminal's own original spot. For --remain, remain_w/h is target's
+     * last FRAME size, so it has to be converted to a client size using
+     * target's OWN insets (remain_left/right/top/bottom), not the
+     * terminal's -- using the terminal's insets here would only cancel out
+     * if the two windows happen to share identical decorations. When they
+     * don't (common: per-app theming, undecorated windows, etc.), that
+     * mismatch doesn't just misplace this one restore -- since --occupy's
+     * own placement of target was itself sized off of the terminal's
+     * previous geometry, using the wrong insets here feeds a slightly
+     * wrong size back as the terminal's new "previous geometry" for the
+     * *next* swallow invocation, compounding a little further every single
+     * cycle. Using target's own insets makes the round trip exact instead:
+     * the terminal's resulting frame ends up equal to remain_w/h either
+     * way, but its *client* size now matches target's actual client size,
+     * so repeated --occupy + --remain cycles stay stable indefinitely
+     * instead of drifting. */
     int restore_x = term_x, restore_y = term_y, restore_w = client_w, restore_h = client_h;
     if (want_remain) {
         restore_x = remain_x;
         restore_y = remain_y;
-        restore_w = remain_w - left - right;
-        restore_h = remain_h - top - bottom;
+        restore_w = remain_w - remain_left - remain_right;
+        restore_h = remain_h - remain_top - remain_bottom;
         if (restore_w <= 0)
             restore_w = remain_w;
         if (restore_h <= 0)
             restore_h = remain_h;
     }
 
+    /* Withdrawing forgets the window's old spot as far as the WM's own
+     * placement policy is concerned, so remapping without this would run
+     * that policy (cascade/center/under-mouse/etc.) and visibly place the
+     * terminal there first, before the _NET_MOVERESIZE_WINDOW correction
+     * below took effect an instant later -- a visible flash/jump. Setting a
+     * PPosition hint before mapping makes ICCCM-compliant WMs (Openbox
+     * included) honor this position immediately instead, so the correction
+     * below becomes a no-op in the common case. Position only, deliberately
+     * not PSize/width/height: a remap is treated like a fresh initial map,
+     * so a size hint here gets run back through the window's own
+     * PResizeInc/PBaseSize (e.g. xterm's character-cell size) and rounded
+     * down to the nearest valid increment -- shrinking the terminal a little
+     * on every single restore. Size is left to the (already-correct)
+     * _NET_MOVERESIZE_WINDOW call below, which doesn't have that problem.
+     * Read-modify-write rather than a fresh XSizeHints, since term_win may
+     * already carry other hints (e.g. that same resize-increment/min-size)
+     * that must survive. */
+    XSizeHints hints;
+    long supplied;
+    if (!XGetWMNormalHints(dpy, term_win, &hints, &supplied))
+        hints.flags = 0;
+    hints.flags |= PPosition;
+    hints.x = restore_x;
+    hints.y = restore_y;
+    XSetWMNormalHints(dpy, term_win, &hints);
+
     /* ICCCM: Withdrawn -> Normal is done simply by mapping the window again. */
     XMapWindow(dpy, term_win);
-    /* _NET_MOVERESIZE_WINDOW: gravity 0 (use the window's own), source
+    /* Fallback/correction in case a WM doesn't honor the hint above (still
+     * needed for full correctness -- gravity 0 uses the window's own, source
      * indication 2 (pager/tool), x/y/width/height all present (bits 8-11). */
     send_client_message(dpy, term_win, root, net_moveresize_window,
                          (2 << 12) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11),

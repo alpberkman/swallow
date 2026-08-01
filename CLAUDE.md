@@ -54,14 +54,39 @@ dependencies beyond libX11.
   on the connection fd is required, not just "nicer."
 - `-r/--remain`: instead of restoring the terminal's own original geometry
   on close, `wait_for_window_close()` tracks the target window's on-screen
-  frame geometry as it changes — re-deriving it via `get_window_geometry()`
-  (the same reparenting-aware helper used for the terminal) on every
+  frame geometry *and* its own `_NET_FRAME_EXTENTS` as they change —
+  re-deriving both via `get_window_geometry()`/`get_frame_extents()` (the
+  same reparenting-aware helpers used for the terminal) on every
   `ConfigureNotify` the target gets, since by the time `DestroyNotify` fires
   the window is gone and can't be queried anymore. `wait_for_window_close()`
   itself still just blocks on `XNextEvent()` with no timeout, unlike
   `wait_for_target_window()` — there's no equivalent failure mode to guard
   against here (the window already exists; waiting for it to close is the
   whole point), so no `poll()`/`select()` is needed.
+  - Converting the target's last frame size into a client-size request for
+    the terminal **must** use the target's own insets, not the terminal's.
+    Using the terminal's insets only happens to cancel out when both windows
+    share identical decorations; when they don't (different theming rules,
+    an undecorated target, etc. — common with per-app Openbox `<application>`
+    rules), `--occupy`'s own placement of the target was itself sized off of
+    the terminal's *previous* geometry, so the wrong-insets version doesn't
+    just misplace one restore — it feeds a slightly wrong size back as the
+    terminal's reference geometry for the *next* invocation, compounding by a
+    fixed amount every single `--occupy --remain` cycle with no fixed point
+    (confirmed via a rigged Openbox rule stripping a target's decorations:
+    drifted by a constant delta indefinitely with the terminal's insets,
+    perfectly stable with the target's own).
+- Restoring the terminal also sets a `PPosition` `WM_NORMAL_HINTS` hint
+  (read-modify-write via `XGetWMNormalHints`/`XSetWMNormalHints`, preserving
+  any other hints already present) before `XMapWindow`, so ICCCM-compliant
+  WMs honor the position immediately instead of running their own placement
+  policy first and needing an instant later `_NET_MOVERESIZE_WINDOW`
+  correction — otherwise a visible flash/jump. Deliberately position-only,
+  never `PSize`/width/height: a remap is treated like a fresh initial map, so
+  a size hint gets run back through the window's own `PResizeInc`/
+  `PBaseSize` (e.g. a terminal's character-cell size) and rounded down to the
+  nearest valid increment, shrinking it a little on every restore. Size stays
+  the job of `_NET_MOVERESIZE_WINDOW`, which doesn't have that problem.
 
 ## Testing
 

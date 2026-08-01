@@ -108,7 +108,14 @@ Notes:
 - With `--remain`, the app window's on-screen position/size is tracked as it
   moves or resizes (not just captured once), so the terminal ends up
   wherever it was left right before closing, however many times it moved in
-  between.
+  between. Its decoration insets are tracked the same way and used (instead
+  of the terminal's own) to convert that into the terminal's requested size —
+  otherwise `--occupy --remain` cycles would slowly drift the terminal's size
+  whenever the app's decorations don't exactly match the terminal's.
+- Restoring the terminal asserts its target position via a `WM_NORMAL_HINTS`
+  hint before mapping it, so a compliant WM places it there immediately
+  instead of momentarily applying its own placement policy first — avoiding
+  a visible flash/jump on every restore.
 
 ## Testing
 
