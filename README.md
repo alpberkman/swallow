@@ -9,6 +9,29 @@ alternative implementation built on their IPC instead -- and
 automatically depending on which WM is actually running, so you can use
 one setup across both.
 
+## Components
+
+The repo builds/installs four pieces; day to day you only invoke
+`swallow-auto` (directly, or via the shell integration below) and let it
+pick the rest:
+
+- **`swallow`** (this doc) -- the C/X11 binary, documented below. Works
+  under any reasonably-compliant reparenting WM, Openbox included.
+- **[`swallow-i3/`](swallow-i3/README.md)** -- a separate bash
+  implementation for i3/sway, built on their IPC instead of raw X11. Own
+  build-free install, own flags (or lack thereof), own README -- it shares
+  no code with `swallow` beyond the name and the general idea.
+- **[`swallow-auto.sh`](swallow-auto.sh)** -- installed as `swallow-auto`.
+  Detects whether i3/sway is actually running (not just installed) and
+  dispatches to `swallow-i3` or `swallow` accordingly, stripping
+  `swallow`-only flags first when it picks `swallow-i3` (which takes none
+  of its own). This is what makes one setup portable across WMs.
+- **[`shell-integration.sh`](#shell-integration)** -- wraps a fixed list of
+  GUI apps in same-named bash functions that call `swallow-auto`, so you can
+  type `kate file.txt` instead of `swallow-auto --occupy --remain --timeout
+  3 kate file.txt`. Optional; `make install` wires it into `~/.bashrc` for
+  you but leaves it inert until you fill in `SWALLOW_APPS`.
+
 ## Requirements
 
 - Xlib (`libx11`, `libx11-dev` / `libX11-devel` depending on distro)
@@ -80,7 +103,7 @@ These options control the size and placement of both the GUI applicaiton and the
 | `-d` | `--default` | Let the window manager choose size/position (the default) |
 | `-o` | `--occupy` | Make the new window occupy the terminal's exact spot |
 | `-f` | `--full-screen` | Start the new window full-screen |
-| `-t <n>` | `--timeout <n>` | Give up if no window appears within n seconds (default 3; 0 waits forever) |
+| `-t <n>` | `--timeout <n>` | Give up if no window appears within n seconds (default 3; 0 waits forever; capped at 3600) |
 | `-r` | `--remain` | When the app's window closes, put the terminal where that window ended up instead of restoring its own original spot |
 | `-k` | `--kill` | When the app's window closes, close the terminal instead of restoring it |
 | `-h` | `--help` | Show usage and exit |
@@ -101,6 +124,9 @@ Notes:
 - `--timeout` guards against a command that never opens a window (a typo'd
   binary, a crash on startup, a non-GUI command) -- without it, `swallow`
   would otherwise wait forever. However some applications might take a very long time to initialize their GUI (especially Java programs and IDEs) so having a very short timeout might prevent swallow to hide the terminal.
+- A finite `--timeout` is capped at 3600s (1h) -- past that it's no more
+  useful than `--timeout 0` (wait forever) for what it's meant to catch. `0`
+  itself is exempt, since it deliberately means unlimited.
 - `--kill` and `--remain` are mutually exclusive -- `--remain` only controls
   where the terminal is restored to, which is moot if it's closed instead.
 
@@ -127,6 +153,10 @@ directly, so the same setup works whether you're running Openbox, i3, or
 sway that session -- see `swallow-auto.sh`.
 
 ## How it works
+
+This section covers the `swallow` binary specifically -- see
+[`swallow-i3/README.md`](swallow-i3/README.md#how-it-works) for how the
+i3/sway implementation works instead; the two share no mechanism.
 
 - The terminal is whatever window is active (`_NET_ACTIVE_WINDOW`) at the
   moment `swallow` starts.
@@ -182,6 +212,11 @@ session -- it never touches your actual desktop. The suite skips cleanly if
 `Xephyr`/`openbox`/`xdotool`/`xprop` aren't installed, and opportunistically
 adds a couple of extra scenarios against `zathura`/`kate` if those happen to
 be installed too.
+
+`swallow-i3/` has its own, separate suite (`swallow-i3/test-i3.sh`), covering
+the i3/sway implementation the same way against a throwaway nested i3
+session -- see [`swallow-i3/README.md`](swallow-i3/README.md#testing).
+`make test` at the repo root does not run it.
 
 ## License
 

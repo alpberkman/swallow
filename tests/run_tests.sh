@@ -68,8 +68,17 @@ wait_for() { # wait_for <timeout_seconds> <command...>
 find_window() { DISPLAY=":$XDISP" xdotool search --name "$1" 2>/dev/null | head -n1; }
 find_window_by_class() {
     # --onlyvisible matters: some apps (e.g. zathura) have unmapped helper
-    # windows sharing the same WM_CLASS as their real, visible window.
-    DISPLAY=":$XDISP" xdotool search --onlyvisible --class "$1" 2>/dev/null | head -n1
+    # windows sharing the same WM_CLASS as their real, visible window. $2,
+    # if given, is a window id to skip -- needed when the app under test is
+    # itself xterm, sharing its WM_CLASS with the terminal setup_terminal
+    # already created (which would otherwise self-match as "the app window").
+    local exclude="${2:-}"
+    local w
+    for w in $(DISPLAY=":$XDISP" xdotool search --onlyvisible --class "$1" 2>/dev/null); do
+        [ "$w" = "$exclude" ] && continue
+        echo "$w"
+        return
+    done
 }
 
 window_mapped() {
@@ -571,7 +580,7 @@ run_real_app_scenario() {
 
     local app_win="" ticks=100 # real apps can be slower to start than xmessage
     while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
-        app_win="$(find_window_by_class "$wm_class")"
+        app_win="$(find_window_by_class "$wm_class" "$term_win")"
         [ -n "$app_win" ] && break
         ticks=$((ticks - 1))
         sleep 0.2
@@ -988,7 +997,7 @@ run_real_app_occupy_flash_scenario() {
 
     local app_win="" ticks=100
     while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
-        app_win="$(find_window_by_class "$wm_class")"
+        app_win="$(find_window_by_class "$wm_class" "$term_win")"
         [ -n "$app_win" ] && break
         ticks=$((ticks - 1))
         sleep 0.2
@@ -1137,6 +1146,22 @@ if command -v kate >/dev/null 2>&1; then
 else
     log "Scenario: kate (real app) -- SKIPPED (kate not installed)"
     log "Scenario: kate occupy flash (real app) -- SKIPPED (kate not installed)"
+fi
+
+if command -v pcmanfm >/dev/null 2>&1; then
+    run_real_app_scenario "pcmanfm (real app)" pcmanfm pcmanfm
+    run_real_app_occupy_flash_scenario "pcmanfm occupy flash (real app)" pcmanfm pcmanfm
+else
+    log "Scenario: pcmanfm (real app) -- SKIPPED (pcmanfm not installed)"
+    log "Scenario: pcmanfm occupy flash (real app) -- SKIPPED (pcmanfm not installed)"
+fi
+
+if command -v xterm >/dev/null 2>&1; then
+    run_real_app_scenario "xterm (real app)" xterm xterm
+    run_real_app_occupy_flash_scenario "xterm occupy flash (real app)" xterm xterm
+else
+    log "Scenario: xterm (real app) -- SKIPPED (xterm not installed)"
+    log "Scenario: xterm occupy flash (real app) -- SKIPPED (xterm not installed)"
 fi
 
 log ""

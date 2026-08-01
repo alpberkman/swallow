@@ -117,14 +117,18 @@ installed commands; it deliberately leaves `~/.bashrc` alone.
   visibly grows back to its real ~548px minimum width right after mapping,
   a flash the hints-only version doesn't have since kate settles directly at
   its true minimum before ever being mapped).
-- `-t/--timeout <n>` (default 3s, 0 waits forever) bounds
-  `wait_for_target_window()`: `poll()` on the X connection fd
+- `-t/--timeout <n>` (default 3s, 0 waits forever, finite values capped at
+  3600s) bounds `wait_for_target_window()`: `poll()` on the X connection fd
   (`ConnectionNumber(dpy)`), not `select()` or a sleep-poll loop — both
   alternatives were tried and are worth knowing not to reintroduce. A
   sleep-poll loop (draining `XPending()` then `usleep()`-ing between checks)
   reliably failed to ever detect the target window's events in testing and
   even crashed a nested Xephyr server under repeated use; blocking directly
-  on the connection fd is required, not just "nicer."
+  on the connection fd is required, not just "nicer." The 3600s cap on
+  finite values (0/unlimited is exempt) keeps `remaining * 1000` in
+  `wait_for_target_window()`'s `poll()`-timeout conversion well clear of
+  `int` overflow, which a raw, unbounded `-t` would otherwise risk for
+  values past ~24.8 days.
 - `-r/--remain`: instead of restoring the terminal's own original geometry
   on close, `wait_for_window_close()` tracks the target window's on-screen
   frame geometry *and* its own `_NET_FRAME_EXTENTS` as they change —
