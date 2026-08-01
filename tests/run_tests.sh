@@ -400,6 +400,57 @@ run_flags_scenario() {
         fail "flags: --help output looks wrong"
     fi
 
+    # --occupy determines the new window's full geometry itself, so
+    # combining it with manual placement flags is rejected rather than
+    # silently dropping the manual ones.
+    if DISPLAY=":$XDISP" "$SWALLOW" --occupy -x 10 true >/dev/null 2>&1; then
+        fail "flags: --occupy + -x should be rejected"
+    else
+        pass "flags: --occupy + -x is rejected"
+    fi
+
+    # Numeric flags must reject a non-numeric (or empty) argument outright,
+    # not silently fall back to 0 -- regression test for -t/-x/-y/-w/-l all
+    # sharing one strtol-based parser where an *empty* argument specifically
+    # used to slip past the "did it fully parse" check (strtol sets endptr
+    # to the input pointer itself on failure, which for "" already points at
+    # the terminating '\0', so a bare `*end != '\0'` check missed it). Most
+    # dangerous for -t: an unrejected empty argument silently became timeout
+    # 0, i.e. "wait forever" -- wrapped in `timeout` here so a regression
+    # fails fast instead of hanging the suite.
+    if timeout 5 env DISPLAY=":$XDISP" "$SWALLOW" -t "" true >/dev/null 2>&1; then
+        fail "flags: -t '' should be rejected"
+    else
+        pass "flags: -t '' is rejected (and doesn't hang)"
+    fi
+
+    if DISPLAY=":$XDISP" "$SWALLOW" -x "" true >/dev/null 2>&1; then
+        fail "flags: -x '' should be rejected"
+    else
+        pass "flags: -x '' is rejected"
+    fi
+
+    if DISPLAY=":$XDISP" "$SWALLOW" -x abc true >/dev/null 2>&1; then
+        fail "flags: -x abc should be rejected"
+    else
+        pass "flags: -x abc is rejected"
+    fi
+
+    # -w/-l specifically must also reject negative values (unlike -x/-y,
+    # where negative is legitimate for multi-monitor setups extending
+    # left/up of the primary).
+    if DISPLAY=":$XDISP" "$SWALLOW" -w -5 true >/dev/null 2>&1; then
+        fail "flags: negative -w should be rejected"
+    else
+        pass "flags: negative -w is rejected"
+    fi
+
+    if DISPLAY=":$XDISP" "$SWALLOW" -l -5 true >/dev/null 2>&1; then
+        fail "flags: negative -l should be rejected"
+    else
+        pass "flags: negative -l is rejected"
+    fi
+
     # No flags and --default should produce identical (WM-chosen) placement.
     if run_flag_case "flags: no-flags placement"; then
         local app1="$CASE_APP_WIN" geom1

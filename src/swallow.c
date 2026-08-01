@@ -84,9 +84,26 @@ static void usage(const char *prog) {
         "--default and --occupy are mutually exclusive. With no options at all,\n"
         "--default is used. --x/--y/--width/--length may be used individually or\n"
         "together to place the window manually; any not given are left to the app/WM.\n"
-        "--full-screen composes with the others rather than replacing them: it's the\n"
-        "geometry the window returns to if full-screen is ever turned off.\n",
+        "They cannot be combined with --occupy, which already determines the full\n"
+        "geometry itself. --full-screen composes with the others rather than\n"
+        "replacing them: it's the geometry the window returns to if full-screen is\n"
+        "ever turned off.\n",
         prog, DEFAULT_TIMEOUT_SEC);
+}
+
+/* strtol(), but rejecting anything that isn't *entirely* a valid number --
+ * including the empty string, which strtol treats as "0 consumed" and, for
+ * an empty argument specifically, leaves *endptr == '\0' too (since endptr
+ * is set to the input pointer itself, which for "" already points at the
+ * terminator) -- so a bare `*end != '\0'` check alone lets an empty string
+ * silently through as 0. */
+static int parse_long(const char *s, long *out) {
+    char *end;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0')
+        return 0;
+    *out = v;
+    return 1;
 }
 
 static int x_error_handler(Display *dpy, XErrorEvent *e) {
@@ -277,35 +294,29 @@ int main(int argc, char **argv) {
     int want_default = 0, want_occupy = 0, want_fullscreen = 0, want_remain = 0;
 
     int c;
-    char *end;
     /* Leading '+' stops at the first non-option argument (the command to
      * launch) instead of permuting the whole argv -- its own flags aren't
      * ours to parse. */
     while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofrh", long_opts, NULL)) != -1) {
         switch (c) {
         case 'x':
-            val_x = strtol(optarg, &end, 10);
-            if (*end != '\0') { fprintf(stderr, "swallow: -x/--x requires a numeric argument\n"); return 1; }
+            if (!parse_long(optarg, &val_x)) { fprintf(stderr, "swallow: -x/--x requires a numeric argument\n"); return 1; }
             have_x = 1;
             break;
         case 'y':
-            val_y = strtol(optarg, &end, 10);
-            if (*end != '\0') { fprintf(stderr, "swallow: -y/--y requires a numeric argument\n"); return 1; }
+            if (!parse_long(optarg, &val_y)) { fprintf(stderr, "swallow: -y/--y requires a numeric argument\n"); return 1; }
             have_y = 1;
             break;
         case 'w':
-            val_w = strtol(optarg, &end, 10);
-            if (*end != '\0') { fprintf(stderr, "swallow: -w/--width requires a numeric argument\n"); return 1; }
+            if (!parse_long(optarg, &val_w) || val_w < 0) { fprintf(stderr, "swallow: -w/--width requires a non-negative numeric argument\n"); return 1; }
             have_w = 1;
             break;
         case 'l':
-            val_l = strtol(optarg, &end, 10);
-            if (*end != '\0') { fprintf(stderr, "swallow: -l/--length requires a numeric argument\n"); return 1; }
+            if (!parse_long(optarg, &val_l) || val_l < 0) { fprintf(stderr, "swallow: -l/--length requires a non-negative numeric argument\n"); return 1; }
             have_l = 1;
             break;
         case 't':
-            timeout_sec = strtol(optarg, &end, 10);
-            if (*end != '\0' || timeout_sec < 0) { fprintf(stderr, "swallow: -t/--timeout requires a non-negative numeric argument\n"); return 1; }
+            if (!parse_long(optarg, &timeout_sec) || timeout_sec < 0) { fprintf(stderr, "swallow: -t/--timeout requires a non-negative numeric argument\n"); return 1; }
             break;
         case 'd': want_default = 1; break;
         case 'o': want_occupy = 1; break;
@@ -318,6 +329,13 @@ int main(int argc, char **argv) {
 
     if (want_default && want_occupy) {
         fprintf(stderr, "swallow: --default and --occupy are mutually exclusive\n");
+        return 1;
+    }
+    if (want_occupy && (have_x || have_y || have_w || have_l)) {
+        /* --occupy already determines the new window's full geometry from
+         * the terminal's; silently overriding just one axis would leave it
+         * unclear which one wins, so reject instead of guessing. */
+        fprintf(stderr, "swallow: --occupy cannot be combined with -x/-y/-w/-l\n");
         return 1;
     }
     if (optind >= argc) {

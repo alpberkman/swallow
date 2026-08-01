@@ -75,7 +75,9 @@ Notes:
 - With no options at all, behavior is the same as `--default`.
 - `--default` and `--occupy` are mutually exclusive.
 - `-x`/`-y`/`-w`/`-l` can be used individually or together for manual
-  placement; any axis not given is left to the app/WM.
+  placement; any axis not given is left to the app/WM. They can't be
+  combined with `--occupy`, which already determines the full geometry
+  itself — rejected outright rather than one silently overriding the other.
 - `--full-screen` composes with the other options rather than replacing
   them: it's an EWMH *state* layered on top, and it's the geometry the
   window returns to if full-screen is later turned off — so e.g.
