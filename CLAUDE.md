@@ -44,6 +44,32 @@ dependencies beyond libX11.
   frame↔client size), `-f/--full-screen` (composes with the others — it's an
   EWMH *state* layered on top of whatever normal geometry was set, not a
   replacement for it). Run `swallow --help` for the full list.
+- That placement (`--occupy`/manual) is applied *twice*: once speculatively
+  pre-map, by `apply_pre_map_placement()` from inside
+  `wait_for_target_window()`'s `CreateNotify` handling (raw
+  `XConfigureWindow` plus a matching `WM_NORMAL_HINTS` `PPosition`/`PSize`,
+  applied to every candidate window, not just the eventual real one — see
+  the concurrent-tracking note above, harmless since a phantom candidate is
+  never mapped), and again post-map via the existing
+  `_NET_MOVERESIZE_WINDOW` correction once `target` is known. The pre-map
+  call is the fix for real, confirmed flash: `wait_for_target_window` only
+  returns once `MapNotify` has already fired, i.e. the window is already
+  visible — an event-trace repro (a helper mirroring
+  `wait_for_target_window`'s own `CreateNotify`/`ConfigureNotify` selection
+  logic) showed the target actually gets mapped at its own default
+  placement/size first (e.g. an app's natural default size, or the WM's
+  center/cascade policy) and only jumps to the requested spot a few
+  `ConfigureNotify`s later, once the post-map correction lands — the new
+  window's own equivalent of the terminal restore flash below. Setting the
+  geometry before the window is *ever* mapped — the same mechanism a client
+  uses for its own first-map geometry — gets the WM to place it there
+  directly instead. The post-map call stays as a fallback for WMs that
+  ignore the pre-map attempt, same belt-and-braces pattern as the terminal
+  restore. This can't fully eliminate the flash for apps that explicitly
+  reposition themselves right before their own map (e.g. a "center on
+  screen" flag) — that's a genuine race against the app's own code that no
+  pre-map trick from a third process can reliably win — but it does for the
+  common case of an app that just leaves initial placement to the WM.
 - `-t/--timeout <n>` (default 3s, 0 waits forever) bounds
   `wait_for_target_window()`: `poll()` on the X connection fd
   (`ConnectionNumber(dpy)`), not `select()` or a sleep-poll loop — both
@@ -76,17 +102,35 @@ dependencies beyond libX11.
     (confirmed via a rigged Openbox rule stripping a target's decorations:
     drifted by a constant delta indefinitely with the terminal's insets,
     perfectly stable with the target's own).
-- Restoring the terminal also sets a `PPosition` `WM_NORMAL_HINTS` hint
+- Restoring the terminal calls `XMoveResizeWindow()` directly on it *before*
+  `XMapWindow`. This is the fix for a real, confirmed flash/jump on restore:
+  an event-trace repro (a helper selecting `StructureNotify` on the terminal
+  and logging every `ConfigureNotify`/`MapNotify` with a timestamp) showed
+  Openbox remaps a withdrawn window straight back to whatever geometry it
+  remembers from before the unmap — ignoring both a `PPosition`
+  `WM_NORMAL_HINTS` hint and a pre-map `_NET_MOVERESIZE_WINDOW` client
+  message (that message is an EWMH request for repositioning an
+  *already-mapped* window, e.g. a pager dragging one around, and Openbox
+  appears to just ignore it while withdrawn) — then jumping again a few ms
+  later once the post-map correction landed. A raw `XMoveResizeWindow` is
+  the same mechanism a client uses to set its own geometry before its
+  *first-ever* map, so Openbox picks it up as the window's current geometry
+  and remaps it straight there. `XSync` follows it so this is confirmed
+  applied before `XMapWindow`.
+- Restoring the terminal *also* sets a `PPosition` `WM_NORMAL_HINTS` hint
   (read-modify-write via `XGetWMNormalHints`/`XSetWMNormalHints`, preserving
-  any other hints already present) before `XMapWindow`, so ICCCM-compliant
-  WMs honor the position immediately instead of running their own placement
-  policy first and needing an instant later `_NET_MOVERESIZE_WINDOW`
-  correction — otherwise a visible flash/jump. Deliberately position-only,
-  never `PSize`/width/height: a remap is treated like a fresh initial map, so
-  a size hint gets run back through the window's own `PResizeInc`/
-  `PBaseSize` (e.g. a terminal's character-cell size) and rounded down to the
-  nearest valid increment, shrinking it a little on every restore. Size stays
-  the job of `_NET_MOVERESIZE_WINDOW`, which doesn't have that problem.
+  any other hints already present) before `XMapWindow`, belt-and-braces
+  alongside the `XMoveResizeWindow` call above for WMs that behave
+  differently from Openbox — ones that *do* forget geometry on withdraw and
+  run a real placement policy (cascade/center/smart/etc.) on remap, where
+  the hint is what makes them honor the restored position instead of
+  overriding it. Deliberately position-only, never `PSize`/width/height: a
+  remap is treated like a fresh initial map, so a size hint gets run back
+  through the window's own `PResizeInc`/`PBaseSize` (e.g. a terminal's
+  character-cell size) and rounded down to the nearest valid increment,
+  shrinking it a little on every restore. Size stays the job of the
+  (already-correct) `_NET_MOVERESIZE_WINDOW` fallback sent right after
+  `XMapWindow`, which doesn't have that problem.
 
 ## Testing
 

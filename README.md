@@ -107,6 +107,12 @@ Notes:
 - Waiting for that window is done with `poll()` on the X connection, bounded
   by `--timeout`, rather than blocking forever — so a command that never
   opens a window doesn't hang `swallow` indefinitely.
+- `--occupy`/manual placement is set on the new window *before* it's ever
+  mapped (as well as being reasserted right after, as a fallback), not just
+  after — some WMs (Openbox included) otherwise map a brand new window at
+  its own default placement first, only jumping to the requested spot an
+  instant later, which is just as visible a flash/jump as the terminal's own
+  restore below.
 - With `--remain`, the app window's on-screen position/size is tracked as it
   moves or resizes (not just captured once), so the terminal ends up
   wherever it was left right before closing, however many times it moved in
@@ -114,10 +120,12 @@ Notes:
   of the terminal's own) to convert that into the terminal's requested size —
   otherwise `--occupy --remain` cycles would slowly drift the terminal's size
   whenever the app's decorations don't exactly match the terminal's.
-- Restoring the terminal asserts its target position via a `WM_NORMAL_HINTS`
-  hint before mapping it, so a compliant WM places it there immediately
-  instead of momentarily applying its own placement policy first — avoiding
-  a visible flash/jump on every restore.
+- Restoring the terminal sets its target geometry directly (before mapping
+  it) rather than just asking the WM for it, since some WMs (Openbox
+  included) otherwise remap a previously-hidden window straight back to
+  where it was before, only jumping to the correct spot an instant later —
+  a visible flash/jump on every restore. A `WM_NORMAL_HINTS` position hint
+  is set too, as a fallback for WMs that behave differently.
 
 ## Testing
 

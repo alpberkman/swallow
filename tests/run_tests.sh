@@ -11,6 +11,8 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SWALLOW="$ROOT_DIR/swallow"
 FORK_HELPER="$SCRIPT_DIR/fork_exec_helper"
 PHANTOM_HELPER="$SCRIPT_DIR/phantom_window_helper"
+GEOM_TRACE_HELPER="$SCRIPT_DIR/geom_trace_helper"
+CREATE_TRACE_HELPER="$SCRIPT_DIR/create_trace_helper"
 
 PASS=0
 FAIL=0
@@ -48,6 +50,8 @@ require xmessage
 [ -x "$SWALLOW" ] || { log "swallow tests: $SWALLOW not built"; exit 1; }
 [ -x "$FORK_HELPER" ] || { log "swallow tests: $FORK_HELPER not built"; exit 1; }
 [ -x "$PHANTOM_HELPER" ] || { log "swallow tests: $PHANTOM_HELPER not built"; exit 1; }
+[ -x "$GEOM_TRACE_HELPER" ] || { log "swallow tests: $GEOM_TRACE_HELPER not built"; exit 1; }
+[ -x "$CREATE_TRACE_HELPER" ] || { log "swallow tests: $CREATE_TRACE_HELPER not built"; exit 1; }
 
 wait_for() { # wait_for <timeout_seconds> <command...>
     local ticks=$(( $1 * 5 ))
@@ -723,6 +727,165 @@ run_remain_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --remain restore must not flash through the old geometry --
+# A before/after geometry check (like run_remain_scenario above) can't catch
+# a WM (Openbox confirmed) briefly remapping the terminal at its old
+# size/position before jumping to the correct one a few ms later -- both
+# checks would still pass since they only look at the final state. Traces
+# every ConfigureNotify the terminal gets during the restore (via
+# geom_trace_helper, selected on it *before* the app window is closed so it
+# can't miss anything) and fails if any of them still carries the terminal's
+# original size -- that would mean the remap landed on the old geometry
+# first, i.e. the flash regressed.
+run_remain_flash_scenario() {
+    local desc="remain flash"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+    local trace_log="/tmp/swallow-test-remain-flash-$$.log"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
+    local term_w_before term_h_before
+    IFS=, read -r _ _ term_w_before term_h_before <<< "$term_geom_before"
+
+    DISPLAY=":$XDISP" "$SWALLOW" --remain --timeout 30 xmessage -title "$app_title" -center "hello from $desc" \
+        >/tmp/swallow-test-remain-flash-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+
+    DISPLAY=":$XDISP" xdotool windowmove "$app_win" 150 110 >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool windowsize "$app_win" 240 160 >/dev/null 2>&1
+    sleep 0.3
+
+    DISPLAY=":$XDISP" "$GEOM_TRACE_HELPER" "$term_win" >"$trace_log" 2>&1 &
+    local trace_pid=$!
+    CLEANUP_PIDS+=("$trace_pid")
+    sleep 0.3
+
+    local app_pid
+    app_pid="$(DISPLAY=":$XDISP" xdotool getwindowpid "$app_win" 2>/dev/null)"
+    if [ -n "$app_pid" ]; then
+        kill -TERM "$app_pid" >/dev/null 2>&1
+    else
+        DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+    fi
+
+    wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null" >/dev/null
+    sleep 0.3
+    kill "$trace_pid" >/dev/null 2>&1
+    wait "$trace_pid" 2>/dev/null
+
+    if grep -qx "${term_w_before},${term_h_before}" "$trace_log"; then
+        fail "$desc: terminal briefly remapped at its old size ($term_w_before,$term_h_before) before correcting -- restore flash regressed"
+    else
+        pass "$desc: terminal never remapped at its old size during restore"
+    fi
+
+    rm -f "$trace_log"
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
+# --- scenario: --occupy must not flash the new window through its own
+# default placement first --
+# wait_for_target_window only returns once the target's MapNotify has
+# already arrived, i.e. it's already visible on screen -- so a before/after
+# geometry check alone (like run_scenario's) can't catch the WM (Openbox
+# confirmed) briefly mapping it at its own default placement/size (e.g.
+# xmessage's own natural button size, before growing to fill the occupy
+# spot) before swallow's own post-map _NET_MOVERESIZE_WINDOW correction
+# fixes it a moment later. Traces every ConfigureNotify the target gets (via
+# create_trace_helper, started before swallow launches so it can't miss the
+# window's creation) and fails if it was ever seen at more than one distinct
+# real (not the 0,0/1,1 placeholder every window briefly has right after
+# XCreateWindow) *size* -- more than one means it was visibly resized after
+# already being on screen, i.e. a flash. Width/height rather than x/y,
+# deliberately: like geom_trace_helper (see run_remain_flash_scenario),
+# ConfigureNotify's x/y are relative to the window's *current* parent, and
+# swallow's target here gets reparented into a WM frame partway through this
+# trace -- comparing raw x/y across that boundary compares two different
+# coordinate spaces and isn't meaningful, whereas width/height aren't
+# affected by reparenting at all. Deliberately doesn't use -center on
+# xmessage (unlike run_remain_flash_scenario): an app that explicitly
+# repositions itself right before its own map is a known, inherent race no
+# pre-map trick from a third process can reliably win -- this test is about
+# the WM's own default placement, not that.
+run_occupy_flash_scenario() {
+    local desc="occupy flash"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+    local trace_log="/tmp/swallow-test-occupy-flash-$$.log"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" xterm_pid="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$CREATE_TRACE_HELPER" >"$trace_log" 2>&1 &
+    local trace_pid=$!
+    CLEANUP_PIDS+=("$trace_pid")
+    sleep 0.3
+
+    DISPLAY=":$XDISP" "$SWALLOW" --occupy --timeout 30 xmessage -title "$app_title" "hello from $desc" \
+        >/tmp/swallow-test-occupy-flash-run.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$trace_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+    sleep 0.3
+
+    DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+    wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null" >/dev/null
+    sleep 0.3
+    kill "$trace_pid" >/dev/null 2>&1
+    wait "$trace_pid" 2>/dev/null
+
+    local distinct
+    distinct="$(awk -v id="$app_win" '
+        $1 == "configure" && $2 == id {
+            split($3, g, ",")
+            if (g[3] > 1 && g[4] > 1) print g[3] "," g[4]
+        }' "$trace_log" | sort -u | wc -l)"
+
+    if [ "$distinct" -le 1 ]; then
+        pass "$desc: app window never appeared at any size but the occupy spot's"
+    else
+        fail "$desc: app window was seen at $distinct different sizes before settling -- occupy flash regressed"
+    fi
+
+    rm -f "$trace_log"
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
 run_scenario "phantom helper window (Kate-style)" "$PHANTOM_HELPER"
@@ -730,6 +893,8 @@ run_detached_scenario
 run_flags_scenario
 run_timeout_scenario
 run_remain_scenario
+run_remain_flash_scenario
+run_occupy_flash_scenario
 
 if command -v zathura >/dev/null 2>&1; then
     run_real_app_scenario "zathura (real app)" zathura zathura
