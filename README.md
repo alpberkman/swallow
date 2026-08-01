@@ -20,7 +20,7 @@ should work with any reasonably-compliant reparenting window manager.
 make
 ```
 
-This produces a single `swallow` binary in the project root.
+This produces a single `swallow` binary in `bin/`.
 
 ## Install
 

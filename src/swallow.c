@@ -66,7 +66,7 @@ static const struct option long_opts[] = {
 };
 
 static void usage(const char *prog) {
-    fprintf(stderr,
+    printf(
         "usage: %s [options] <command> [args...]\n"
         "\n"
         "Options (all affect only where/how the new window is placed):\n"

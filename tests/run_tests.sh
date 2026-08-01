@@ -8,11 +8,12 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-SWALLOW="$ROOT_DIR/swallow"
-FORK_HELPER="$SCRIPT_DIR/fork_exec_helper"
-PHANTOM_HELPER="$SCRIPT_DIR/phantom_window_helper"
-GEOM_TRACE_HELPER="$SCRIPT_DIR/geom_trace_helper"
-CREATE_TRACE_HELPER="$SCRIPT_DIR/create_trace_helper"
+BIN_DIR="$ROOT_DIR/bin"
+SWALLOW="$BIN_DIR/swallow"
+FORK_HELPER="$BIN_DIR/fork_exec_helper"
+PHANTOM_HELPER="$BIN_DIR/phantom_window_helper"
+GEOM_TRACE_HELPER="$BIN_DIR/geom_trace_helper"
+CREATE_TRACE_HELPER="$BIN_DIR/create_trace_helper"
 
 PASS=0
 FAIL=0
@@ -886,6 +887,82 @@ run_occupy_flash_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --help is pipeable/pageable (goes to stdout, not stderr) ----
+# usage()/--help used to always go to stderr, indistinguishable from a usage
+# error and unusable with `swallow --help | less`. Checks the help text
+# lands on stdout specifically, and that stderr is empty for this
+# unambiguously-successful invocation.
+run_help_stdout_scenario() {
+    log "Scenario: --help output stream"
+
+    local stdout_out stderr_out status
+    stdout_out="$(DISPLAY=":$XDISP" "$SWALLOW" --help 2>/tmp/swallow-test-help-stderr.log)"
+    status=$?
+    stderr_out="$(cat /tmp/swallow-test-help-stderr.log)"
+    rm -f /tmp/swallow-test-help-stderr.log
+
+    if [ "$status" -eq 0 ]; then
+        pass "--help: exits 0"
+    else
+        fail "--help: exited $status, expected 0"
+    fi
+
+    if echo "$stdout_out" | grep -q -- '--occupy' && echo "$stdout_out" | grep -q -- '--remain'; then
+        pass "--help: full help text is on stdout"
+    else
+        fail "--help: help text missing from stdout"
+    fi
+
+    if [ -z "$stderr_out" ]; then
+        pass "--help: stderr is empty"
+    else
+        fail "--help: unexpected stderr output: $stderr_out"
+    fi
+}
+
+# --- scenario: a command that doesn't even exist behaves like a timeout ----
+# run_timeout_scenario covers a command that runs but never opens a window
+# (sleep); this covers execvp() itself failing (typo'd/missing binary) --
+# the fork'd child prints an error and _exit(127)s immediately, and
+# wait_for_target_window has no way to know that happened (it only watches
+# for X events), so swallow must still just run out its --timeout and exit
+# non-zero rather than, say, hanging or crashing on the dead child.
+run_bad_command_scenario() {
+    local desc="nonexistent command"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" term_geom_before="$SETUP_TERM_GEOM" xterm_pid="$SETUP_XTERM_PID"
+
+    local start=$SECONDS
+    DISPLAY=":$XDISP" "$SWALLOW" --timeout 2 /no/such/binary-swallow-test-$$ \
+        >/tmp/swallow-test-badcmd.log 2>&1
+    local status=$? elapsed=$((SECONDS - start))
+
+    if [ "$status" -ne 0 ]; then
+        pass "$desc: swallow exits non-zero"
+    else
+        fail "$desc: swallow exited 0 despite the command never existing"
+    fi
+
+    if [ "$elapsed" -le 5 ]; then
+        pass "$desc: swallow gave up around --timeout instead of hanging ($elapsed s)"
+    else
+        fail "$desc: swallow took ${elapsed}s to give up, expected ~2s (--timeout 2)"
+    fi
+
+    if window_mapped "$term_win" && [ "$(window_geom "$term_win")" = "$term_geom_before" ]; then
+        pass "$desc: terminal was never touched"
+    else
+        fail "$desc: terminal was hidden or moved despite the command never existing"
+    fi
+
+    kill "$xterm_pid" >/dev/null 2>&1
+    wait "$xterm_pid" 2>/dev/null
+}
+
 run_scenario "direct exec"
 run_scenario "fork+exec launcher (double-fork daemonize style)" "$FORK_HELPER"
 run_scenario "phantom helper window (Kate-style)" "$PHANTOM_HELPER"
@@ -895,6 +972,8 @@ run_timeout_scenario
 run_remain_scenario
 run_remain_flash_scenario
 run_occupy_flash_scenario
+run_help_stdout_scenario
+run_bad_command_scenario
 
 if command -v zathura >/dev/null 2>&1; then
     run_real_app_scenario "zathura (real app)" zathura zathura

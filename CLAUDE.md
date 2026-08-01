@@ -9,14 +9,17 @@ instead.
 ## Build / install / test
 
 ```
-make            # builds ./swallow (needs pkg-config + libx11-dev)
-make test       # builds test helpers, then runs the full integration suite
+make            # builds bin/swallow (needs pkg-config + libx11-dev)
+make test       # builds test helpers (into bin/ too), then runs the suite
 make install    # installs to $PREFIX/bin (default /usr/local/bin)
 make clean
 ```
 
 There is only one source file: `src/swallow.c`. No other build system, no
-dependencies beyond libX11.
+dependencies beyond libX11. All build outputs (`swallow` itself and the test
+helper binaries under `tests/`) land in a single top-level `bin/` directory,
+gitignored, built by both `Makefile` and `tests/Makefile` via a shared
+`../bin`/`bin` `OUTDIR`.
 
 ## How it works (see the header comment in src/swallow.c for full detail)
 

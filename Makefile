@@ -8,25 +8,30 @@ LIBS     := $(shell $(PKG_CONFIG) --libs x11)
 PREFIX   ?= /usr/local
 BINDIR   := $(PREFIX)/bin
 
-SRC := src/swallow.c
-BIN := swallow
+SRC     := src/swallow.c
+BINNAME := swallow
+OUTDIR  := bin
+BIN     := $(OUTDIR)/$(BINNAME)
 
 .PHONY: all clean install uninstall test
 
 all: $(BIN)
 
-$(BIN): $(SRC)
+$(BIN): $(SRC) | $(OUTDIR)
 	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
+
+$(OUTDIR):
+	mkdir -p $(OUTDIR)
 
 clean:
 	rm -f $(BIN)
 	$(MAKE) -C tests clean
 
 install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
+	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/$(BIN)
+	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME)
 
 test: $(BIN)
 	$(MAKE) -C tests
