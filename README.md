@@ -210,8 +210,8 @@ make test
 Runs a real integration suite in a throwaway nested `Xephyr` + `openbox`
 session -- it never touches your actual desktop. The suite skips cleanly if
 `Xephyr`/`openbox`/`xdotool`/`xprop` aren't installed, and opportunistically
-adds a couple of extra scenarios against `zathura`/`kate` if those happen to
-be installed too.
+adds extra scenarios against `zathura`/`kate`/`pcmanfm`/`xterm` if those
+happen to be installed too.
 
 `swallow-i3/` has its own, separate suite (`swallow-i3/test-i3.sh`), covering
 the i3/sway implementation the same way against a throwaway nested i3

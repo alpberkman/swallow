@@ -39,7 +39,7 @@ never resets `SWALLOW_APPS`/`SWALLOW_FLAGS` once you've edited them, and
 never duplicates the `source` line. `uninstall` only removes the three
 installed commands; it deliberately leaves `~/.bashrc` alone.
 
-## How it works (see the header comment in src/swallow.c for full detail)
+## How it works
 
 - The terminal is whatever window is active (`_NET_ACTIVE_WINDOW`) when
   swallow starts.
@@ -65,6 +65,14 @@ installed commands; it deliberately leaves `~/.bashrc` alone.
   frame↔client size), `-f/--full-screen` (composes with the others — it's an
   EWMH *state* layered on top of whatever normal geometry was set, not a
   replacement for it). Run `swallow --help` for the full list.
+- Numeric CLI arguments go through `parse_long()`, which rejects non-numeric
+  input, trailing garbage, and `strtol()` overflow (`errno == ERANGE`) --
+  unchecked, an oversized argument would silently become a clamped
+  `LONG_MIN`/`LONG_MAX`, then a bogus geometry/timeout once truncated by a
+  later `(int)` cast, instead of an error. `-w`/`-l` additionally require a
+  *positive* value, not just non-negative: X rejects a 0 width/height with
+  `BadValue`, which the custom error handler swallows, so `-w 0` would
+  otherwise silently do nothing instead of erroring.
 - That placement (`--occupy`/manual) is applied *twice*: once speculatively
   pre-map, by `apply_pre_map_placement()` from inside
   `wait_for_target_window()`'s `CreateNotify` handling (raw
@@ -117,6 +125,25 @@ installed commands; it deliberately leaves `~/.bashrc` alone.
   visibly grows back to its real ~548px minimum width right after mapping,
   a flash the hints-only version doesn't have since kate settles directly at
   its true minimum before ever being mapped).
+- Known, deliberately unfixed gap: `xterm` still shows a brief pre-map size
+  flash despite the `PMinSize`/`PMaxSize` pin above. An event-trace repro
+  extended to also log `PropertyNotify` on `WM_NORMAL_HINTS` (not just
+  `ConfigureNotify`, which the zathura/kate/pcmanfm investigation above used)
+  showed xterm itself clears `PMinSize`/`PMaxSize` from that property partway
+  through its own startup, before settling on its real font-metric-driven
+  default size and mapping — unlike those three, whose toolkits don't touch
+  `WM_NORMAL_HINTS` again until after mapping. Reordering
+  `apply_pre_map_placement()` to set the pin before the `XConfigureWindow`
+  call (on the theory the WM was reading stale hints when the resize request
+  landed) measured no difference, since the real cause is xterm overwriting
+  the property itself afterward, not read timing. Reactively re-pinning on
+  every such `PropertyNotify` up to `MapNotify` was considered but not
+  attempted, given the precedent directly above of a reactive approach
+  already having made kate worse for a related reason — not worth risking
+  for a flash that, being entirely pre-map, is milder than what it targets.
+  `run_real_app_occupy_flash_scenario` is accordingly not run against xterm
+  in `run_tests.sh` (only the main hide/restore/geometry scenario is), so
+  this known gap doesn't show up as a perpetual test failure.
 - `-t/--timeout <n>` (default 3s, 0 waits forever, finite values capped at
   3600s) bounds `wait_for_target_window()`: `poll()` on the X connection fd
   (`ConnectionNumber(dpy)`), not `select()` or a sleep-poll loop — both
@@ -214,8 +241,8 @@ installed commands; it deliberately leaves `~/.bashrc` alone.
 up a throwaway Xephyr + Openbox session and drives it with `xdotool`/`xprop`.
 Requires `Xephyr`, `openbox`, `xdotool`, `xprop`; the script skips (exit 0)
 cleanly if they're missing. It also opportunistically tests against real
-apps (`zathura`, `kate`) if installed, skipping those specific scenarios
-otherwise.
+apps (`zathura`, `kate`, `pcmanfm`, `xterm`) if installed, skipping those
+specific scenarios otherwise.
 
 Test helper binaries live in `tests/` and simulate specific real-world
 launch patterns:
@@ -247,15 +274,18 @@ failed exactly that way (window and process both survived) until the fix
 switched to a direct `WM_DELETE_WINDOW` message.
 
 `run_occupy_flash_scenario` covers the *position* pre-map flash, using
-`xmessage`. `run_real_app_occupy_flash_scenario` (opportunistic, zathura/kate
-only) covers the *size* one: unlike the xmessage-based test, it doesn't fail
-on seeing more than one distinct pre-map size (a real app's own pre-map
-resize churn is expected and harmless, since the window isn't mapped yet) —
-it fails only if the size the window is *actually mapped at* differs from
-the size it later settles at, i.e. a real, visible post-map jump. Verified
-to actually catch the bug it targets by reverting the `PMinSize`/`PMaxSize`
-fix and confirming it fails (zathura: mapped at 798×577, settled at
-496×342) — not just theater that passes regardless.
+`xmessage`. `run_real_app_occupy_flash_scenario` (opportunistic, run against
+zathura/kate/pcmanfm, whichever are installed) covers the *size* one: unlike
+the xmessage-based test, it doesn't fail on seeing more than one distinct
+pre-map size (a real app's own pre-map resize churn is expected and
+harmless, since the window isn't mapped yet) — it fails only if the size the
+window is *actually mapped at* differs from the size it later settles at,
+i.e. a real, visible post-map jump. Verified to actually catch the bug it
+targets by reverting the `PMinSize`/`PMaxSize` fix and confirming it fails
+(zathura: mapped at 798×577, settled at 496×342) — not just theater that
+passes regardless. Not run against xterm, which also gets a plain
+`run_real_app_scenario` -- see the known xterm flash gap noted above under
+`apply_pre_map_placement()`.
 
 Everything runs against a nested Xephyr display, never the real desktop.
 
