@@ -5,13 +5,23 @@ PKG_CONFIG ?= pkg-config
 CFLAGS   += $(shell $(PKG_CONFIG) --cflags x11)
 LIBS     := $(shell $(PKG_CONFIG) --libs x11)
 
-PREFIX   ?= /usr/local
+PREFIX   ?= $(HOME)/.local
 BINDIR   := $(PREFIX)/bin
 
 SRC     := src/swallow.c
 BINNAME := swallow
 OUTDIR  := bin
 BIN     := $(OUTDIR)/$(BINNAME)
+
+AUTONAME := swallow-auto
+AUTOSRC  := swallow-auto.sh
+I3NAME   := swallow-i3
+I3SRC    := swallow-i3/swallow-i3.sh
+
+BASHRC              := $(HOME)/.bashrc
+SWALLOW_APPS_LINE    := SWALLOW_APPS=()
+SHELL_INTEGRATION    := $(CURDIR)/shell-integration.sh
+SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
 .PHONY: all clean install uninstall test
 
@@ -27,11 +37,28 @@ clean:
 	rm -f $(BIN)
 	$(MAKE) -C tests clean
 
+# The .bashrc line is a `source`, not a raw append of shell-integration.sh's
+# own code -- sourcing keeps its BASH_SOURCE-relative lookup of
+# swallow-auto.sh resolving to this repo, instead of to wherever .bashrc
+# happens to live. grep -qxF guards against appending the same line again
+# on repeat installs.
+#
+# SWALLOW_APPS=() is added above it (only if no SWALLOW_APPS= assignment
+# exists at all yet -- a plain -qxF check would re-add the empty line
+# every time and stomp whatever apps were since filled in) as somewhere
+# for you to list the apps shell-integration.sh should wrap; it's your
+# .bashrc from here, not this repo's.
 install: $(BIN)
 	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
+	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
+	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
+	grep -qE '^SWALLOW_APPS=' $(BASHRC) 2>/dev/null || \
+		echo '$(SWALLOW_APPS_LINE)' >> $(BASHRC)
+	grep -qxF '$(SHELL_INTEGRATION_LINE)' $(BASHRC) 2>/dev/null || \
+		echo '$(SHELL_INTEGRATION_LINE)' >> $(BASHRC)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME) $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME)
 
 test: $(BIN)
 	$(MAKE) -C tests

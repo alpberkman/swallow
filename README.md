@@ -21,9 +21,14 @@ This produces a single `swallow` binary in `bin/`.
 ## Install
 
 ```sh
-make install                 # installs to /usr/local/bin
-make install PREFIX=~/.local # or any other prefix
+make install                    # installs to ~/.local/bin
+make install PREFIX=/usr/local  # or any other prefix (needs sudo for a system dir)
 ```
+
+Installs three commands: `swallow` itself, `swallow-auto` (picks between
+`swallow` and `swallow-i3` based on the running WM -- see
+`swallow-auto.sh`), and `swallow-i3` (the i3/sway-specific script in
+`swallow-i3/`, copied in as-is -- it has no build step of its own).
 
 ```sh
 make uninstall
