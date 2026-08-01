@@ -40,7 +40,7 @@ fi
 is_swallow_flag() {
     case "$1" in
         -x|--x|-y|--y|-w|--width|-l|--length|-d|--default|-o|--occupy| \
-        -f|--full-screen|-t|--timeout|-r|--remain|-h|--help) return 0 ;;
+        -f|--full-screen|-t|--timeout|-r|--remain|-k|--kill|-h|--help) return 0 ;;
         *) return 1 ;;
     esac
 }

@@ -4,7 +4,7 @@ A minimal C/X11 CLI tool for Linux (target WM: Openbox). It launches a GUI
 app from a terminal, hides the terminal while the app's window is open, and
 restores the terminal (position + size) when the app's window closes — or,
 with `--remain`, moves the terminal to wherever the app's window ended up
-instead.
+instead, or, with `--kill`, closes the terminal instead of restoring it.
 
 This repo also has an independent i3/sway-specific implementation in
 `swallow-i3/` (a bash script built on i3/sway IPC instead of raw X11 — see
@@ -178,6 +178,31 @@ installed commands; it deliberately leaves `~/.bashrc` alone.
   shrinking it a little on every restore. Size stays the job of the
   (already-correct) `_NET_MOVERESIZE_WINDOW` fallback sent right after
   `XMapWindow`, which doesn't have that problem.
+- `-k/--kill`: skips the entire restore path above and instead calls
+  `close_window()` on the terminal. That's a `WM_DELETE_WINDOW`
+  `ClientMessage` sent straight to the window (the same protocol message
+  `wmctrl -c` and a WM's own close button use), not the EWMH
+  `_NET_CLOSE_WINDOW` request, and not routed through `send_client_message()`
+  (root + `SubstructureRedirectMask`, the convention for asking the *WM* to
+  act on a window) — by the time this runs, `term_win` has already been
+  through `XUnmapWindow` earlier in `main()` for the hide step, and ICCCM
+  Normal → Withdrawn means the WM has reparented it back under root and
+  dropped its managed frame, so a request that relies on the WM still
+  tracking it as managed (`_NET_CLOSE_WINDOW`, or `send_client_message()`'s
+  own root-directed convention) silently does nothing at that point —
+  confirmed via a real Xephyr+Openbox repro: both the window and the
+  terminal process outlived it indefinitely. Sending `WM_DELETE_WINDOW`
+  directly to the window sidesteps the WM entirely: it's just a
+  `ClientMessage` the app itself watches for, valid whether or not the WM
+  currently manages the window. `close_window()` gates this on
+  `XGetWMProtocols()` showing the terminal actually advertises
+  `WM_DELETE_WINDOW` support first — still a request, not a forced kill, so
+  a compliant terminal can decline (e.g. prompt on unsaved output), same as
+  clicking its own close button would. `XKillClient()` is the fallback for
+  a terminal that never registered the protocol at all (same fallback EWMH
+  itself documents for `_NET_CLOSE_WINDOW`). Rejected in combination with
+  `--remain`: `--remain` only controls where the terminal is restored to,
+  which is moot once it's closed instead of restored.
 
 ## Testing
 
@@ -209,6 +234,13 @@ an app window, moves/resizes that window (standing in for the user
 repositioning it while they work) before closing it, then checks the
 terminal ends up at the app's last geometry rather than its own original
 spot.
+
+`run_kill_scenario` covers `--kill`: launches `swallow --kill` against an
+app window, closes it, then checks the terminal process itself exited and
+its window is gone, rather than being restored. This is the regression
+test for the `_NET_CLOSE_WINDOW`-goes-nowhere bug above — it initially
+failed exactly that way (window and process both survived) until the fix
+switched to a direct `WM_DELETE_WINDOW` message.
 
 `run_occupy_flash_scenario` covers the *position* pre-map flash, using
 `xmessage`. `run_real_app_occupy_flash_scenario` (opportunistic, zathura/kate

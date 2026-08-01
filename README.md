@@ -82,6 +82,7 @@ These options control the size and placement of both the GUI applicaiton and the
 | `-f` | `--full-screen` | Start the new window full-screen |
 | `-t <n>` | `--timeout <n>` | Give up if no window appears within n seconds (default 3; 0 waits forever) |
 | `-r` | `--remain` | When the app's window closes, put the terminal where that window ended up instead of restoring its own original spot |
+| `-k` | `--kill` | When the app's window closes, close the terminal instead of restoring it |
 | `-h` | `--help` | Show usage and exit |
 
 Notes:
@@ -100,6 +101,8 @@ Notes:
 - `--timeout` guards against a command that never opens a window (a typo'd
   binary, a crash on startup, a non-GUI command) -- without it, `swallow`
   would otherwise wait forever. However some applications might take a very long time to initialize their GUI (especially Java programs and IDEs) so having a very short timeout might prevent swallow to hide the terminal.
+- `--kill` and `--remain` are mutually exclusive -- `--remain` only controls
+  where the terminal is restored to, which is moot if it's closed instead.
 
 ## Shell integration
 
@@ -160,6 +163,13 @@ sway that session -- see `swallow-auto.sh`.
   where it was before, only jumping to the correct spot an instant later --
   a visible flash/jump on every restore. A `WM_NORMAL_HINTS` position hint
   is set too, as a fallback for WMs that behave differently.
+- With `--kill`, none of the restore step above happens -- instead
+  `swallow` sends the terminal a `WM_DELETE_WINDOW` message directly (the
+  same protocol message `wmctrl -c` or a WM's own close button use). It's
+  a request, not a forced kill: an ICCCM-compliant terminal can still
+  decline (e.g. prompt on unsaved output) exactly as if its own close
+  button had been clicked; a terminal that doesn't support it at all gets
+  its connection forcibly closed instead.
 
 ## Testing
 

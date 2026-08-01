@@ -728,6 +728,63 @@ run_remain_scenario() {
     wait "$xterm_pid" 2>/dev/null
 }
 
+# --- scenario: --kill closes the terminal instead of restoring it --------
+run_kill_scenario() {
+    local desc="kill"
+    local term_title="SwallowTestTerm-$$-$RANDOM"
+    local app_title="SwallowTestApp-$$-$RANDOM"
+
+    log "Scenario: $desc"
+
+    setup_terminal "$desc" "$term_title" || return
+    local term_win="$SETUP_TERM_WIN" xterm_pid="$SETUP_XTERM_PID"
+
+    DISPLAY=":$XDISP" "$SWALLOW" --kill --timeout 30 xmessage -title "$app_title" -center "hello from $desc" \
+        >/tmp/swallow-test-kill.log 2>&1 &
+    local swallow_pid=$!
+    CLEANUP_PIDS+=("$swallow_pid")
+
+    local app_win=""
+    local ticks=50
+    while [ -z "$app_win" ] && [ "$ticks" -gt 0 ]; do
+        app_win="$(find_window "$app_title")"
+        [ -n "$app_win" ] && break
+        ticks=$((ticks - 1))
+        sleep 0.2
+    done
+    if [ -z "$app_win" ]; then
+        fail "$desc: app window never appeared"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+    pass "$desc: app window appeared"
+
+    DISPLAY=":$XDISP" xdotool windowkill "$app_win" >/dev/null 2>&1
+
+    if wait_for 10 bash -c "! kill -0 $swallow_pid 2>/dev/null"; then
+        pass "$desc: swallow exited after app window closed"
+    else
+        fail "$desc: swallow did not exit after app window closed"
+        kill "$swallow_pid" "$xterm_pid" >/dev/null 2>&1
+        return
+    fi
+
+    if wait_for 10 bash -c "! kill -0 $xterm_pid 2>/dev/null"; then
+        pass "$desc: terminal was closed instead of restored"
+    else
+        fail "$desc: terminal is still running after --kill"
+        kill "$xterm_pid" >/dev/null 2>&1
+    fi
+
+    if [ -z "$(find_window "$term_title")" ]; then
+        pass "$desc: terminal window no longer exists"
+    else
+        fail "$desc: terminal window still exists after --kill"
+    fi
+
+    wait "$xterm_pid" 2>/dev/null
+}
+
 # --- scenario: --remain restore must not flash through the old geometry --
 # A before/after geometry check (like run_remain_scenario above) can't catch
 # a WM (Openbox confirmed) briefly remapping the terminal at its old
@@ -1060,6 +1117,7 @@ run_detached_scenario
 run_flags_scenario
 run_timeout_scenario
 run_remain_scenario
+run_kill_scenario
 run_remain_flash_scenario
 run_occupy_flash_scenario
 run_help_stdout_scenario

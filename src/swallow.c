@@ -63,6 +63,7 @@ static const struct option long_opts[] = {
     {"occupy", no_argument, NULL, 'o'},
     {"full-screen", no_argument, NULL, 'f'},
     {"remain", no_argument, NULL, 'r'},
+    {"kill", no_argument, NULL, 'k'},
     {"help", no_argument, NULL, 'h'},
     {NULL, 0, NULL, 0},
 };
@@ -84,6 +85,8 @@ static void usage(const char *prog) {
         "  -r, --remain       When the app's window closes, put the terminal where\n"
         "                     that window ended up instead of restoring the\n"
         "                     terminal's original position/size\n"
+        "  -k, --kill         When the app's window closes, close the terminal\n"
+        "                     instead of restoring it\n"
         "  -h, --help         Show this help and exit\n"
         "\n"
         "--default and --occupy are mutually exclusive.\n"
@@ -91,7 +94,8 @@ static void usage(const char *prog) {
         "the window manually; any not given are left to the app/WM. They cannot be\n"
         "combined with --occupy, which already determines the full geometry itself.\n"
         "--full-screen can be used with any other flags since they set the actual geometry,\n"
-        "while full screen is more like a special view.\n",
+        "while full screen is more like a special view.\n"
+        "--kill and --remain are mutually exclusive.\n",
         prog, DEFAULT_TIMEOUT_SEC);
 }
 
@@ -154,6 +158,51 @@ static void send_client_message(Display *dpy, Window target, Window root, Atom t
     ev.xclient.data.l[3] = l3;
     ev.xclient.data.l[4] = l4;
     XSendEvent(dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+}
+
+/* Closes win the polite way: a WM_DELETE_WINDOW ClientMessage sent directly
+ * to it (the same protocol message wmctrl -c and a WM's own close button
+ * use), gated on win actually advertising support for it via WM_PROTOCOLS.
+ * Sent straight to win rather than via send_client_message's root/
+ * SubstructureRedirect convention -- that convention is for asking the *WM*
+ * to act on a window (e.g. _NET_CLOSE_WINDOW), but WM_DELETE_WINDOW is the
+ * window's own protocol message, meant for the window itself to receive
+ * directly regardless of whether the WM currently manages it. That
+ * distinction matters here: by the time this is called for --kill, win has
+ * already been through XUnmapWindow, and ICCCM Normal->Withdrawn means the
+ * WM has reparented it back under root and dropped its managed frame --
+ * routing through the WM at that point (as _NET_CLOSE_WINDOW would)
+ * silently goes nowhere (confirmed: window and process both survive
+ * indefinitely). This is still a request, not a forced kill: a compliant
+ * client can decline (e.g. prompt on unsaved output), same as clicking its
+ * own close button would. XKillClient is the fallback for a client that
+ * never registered WM_DELETE_WINDOW at all (rare, but such a client would
+ * otherwise just ignore the polite message forever) -- forcibly closes its
+ * connection instead, same as _NET_CLOSE_WINDOW's own documented
+ * fallback. */
+static void close_window(Display *dpy, Window win, Atom wm_protocols, Atom wm_delete_window) {
+    Atom *protocols = NULL;
+    int nprotocols = 0;
+    int supports_delete = 0;
+    if(XGetWMProtocols(dpy, win, &protocols, &nprotocols)) {
+        for(int i = 0; i < nprotocols; i++) {
+            if(protocols[i] == wm_delete_window) { supports_delete = 1; break; }
+        }
+        XFree(protocols);
+    }
+    if(supports_delete) {
+        XEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.xclient.type = ClientMessage;
+        ev.xclient.window = win;
+        ev.xclient.message_type = wm_protocols;
+        ev.xclient.format = 32;
+        ev.xclient.data.l[0] = (long)wm_delete_window;
+        ev.xclient.data.l[1] = CurrentTime;
+        XSendEvent(dpy, win, False, NoEventMask, &ev);
+    } else {
+        XKillClient(dpy, win);
+    }
 }
 
 /* Root-relative screen geometry of win, using its decoration frame (the WM
@@ -398,13 +447,13 @@ int main(int argc, char **argv) {
     int have_x = 0, have_y = 0, have_w = 0, have_l = 0;
     long val_x = 0, val_y = 0, val_w = 0, val_l = 0;
     long timeout_sec = DEFAULT_TIMEOUT_SEC;
-    int want_default = 0, want_occupy = 0, want_fullscreen = 0, want_remain = 0;
+    int want_default = 0, want_occupy = 0, want_fullscreen = 0, want_remain = 0, want_kill = 0;
 
     int c;
     /* Leading '+' stops at the first non-option argument (the command to
      * launch) instead of permuting the whole argv -- its own flags aren't
      * ours to parse. */
-    while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofrh", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "+x:y:w:l:t:dofrkh", long_opts, NULL)) != -1) {
         switch (c) {
         case 'x':
             if(!parse_long(optarg, &val_x)) { fprintf(stderr, "swallow: -x/--x requires a numeric argument\n"); return 1; }
@@ -429,6 +478,7 @@ int main(int argc, char **argv) {
         case 'o': want_occupy = 1; break;
         case 'f': want_fullscreen = 1; break;
         case 'r': want_remain = 1; break;
+        case 'k': want_kill = 1; break;
         case 'h': usage(argv[0]); return 0;
         default: usage(argv[0]); return 1;
         }
@@ -436,6 +486,14 @@ int main(int argc, char **argv) {
 
     if(want_default && want_occupy) {
         fprintf(stderr, "swallow: --default and --occupy are mutually exclusive\n");
+        return 1;
+    }
+    if(want_kill && want_remain) {
+        /* --remain exists purely to control where the terminal is restored
+         * to; --kill skips restoring it entirely, so the combination can
+         * only mean one flag's intent was ignored -- reject rather than
+         * silently picking one. */
+        fprintf(stderr, "swallow: --kill and --remain are mutually exclusive\n");
         return 1;
     }
     if(want_occupy && (have_x || have_y || have_w || have_l)) {
@@ -462,6 +520,8 @@ int main(int argc, char **argv) {
     Atom net_active_window = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
     Atom net_moveresize_window = XInternAtom(dpy, "_NET_MOVERESIZE_WINDOW", False);
     Atom net_frame_extents = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
+    Atom wm_protocols = XInternAtom(dpy, "WM_PROTOCOLS", False);
+    Atom wm_delete_window = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 
     Window term_win = get_active_window(dpy, root, net_active_window);
     if(term_win == None) {
@@ -596,6 +656,18 @@ int main(int argc, char **argv) {
 
     wait_for_window_close(dpy, root, target, net_frame_extents, want_remain,
                            &term_attrs, remain_extents);
+
+    /* --kill: skip the restore entirely and close the terminal instead --
+     * see close_window() for why this can't just be another
+     * send_client_message() call. */
+    if(want_kill) {
+        close_window(dpy, term_win, wm_protocols, wm_delete_window);
+        XFlush(dpy);
+        int status;
+        waitpid(child, &status, WNOHANG);
+        XCloseDisplay(dpy);
+        return 0;
+    }
 
     /* Restore geometry: target's last-known spot for --remain, otherwise the
      * terminal's own original spot -- term_attrs already holds whichever one
