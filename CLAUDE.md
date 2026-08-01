@@ -73,6 +73,32 @@ gitignored, built by both `Makefile` and `tests/Makefile` via a shared
   screen" flag) — that's a genuine race against the app's own code that no
   pre-map trick from a third process can reliably win — but it does for the
   common case of an app that just leaves initial placement to the WM.
+- The above covers *position*; *size* needed a separate fix. Real toolkit
+  apps (Qt/GTK — confirmed via the same event-trace technique against
+  zathura, kate, pcmanfm) routinely create small and then explicitly resize
+  themselves to fit their content sometime between `CreateNotify` and their
+  own `XMapWindow` — landing after `apply_pre_map_placement()`'s one-shot
+  `XConfigureWindow` and silently overriding it, so the window still mapped
+  at its own natural size first (e.g. zathura's 800×600) and only snapped to
+  the requested size an instant later. The existing `run_occupy_flash_scenario`
+  test never caught this because it uses `xmessage`, which computes its size
+  once in `XCreateWindow` itself and never re-resizes — nothing to race. The
+  fix: `apply_pre_map_placement()` now sets `PMinSize`/`PMaxSize` (not just
+  `PSize`) pinned to the same width/height. `PSize` alone is only an
+  initial-placement hint the WM consults once; it doesn't constrain what the
+  app itself asks for afterward. Pinning `min == max` instead makes the WM
+  clamp *any* resize request — the app's own included — to that size for as
+  long as the pin holds. It doesn't leave the window stuck: apps set their
+  own real `WM_NORMAL_HINTS` (their actual minimum size, no max) shortly
+  after mapping, superseding the pin and leaving the window freely resizable
+  again (confirmed by resizing a swallowed zathura window right after
+  launch). A reactive alternative — re-asserting width/height on every
+  `ConfigureNotify` up to `MapNotify` instead of a static hint — was tried
+  and rejected: A/B testing showed it added nothing for zathura/pcmanfm and
+  made kate *worse* (forces it down to the occupy size pre-map, then it
+  visibly grows back to its real ~548px minimum width right after mapping,
+  a flash the hints-only version doesn't have since kate settles directly at
+  its true minimum before ever being mapped).
 - `-t/--timeout <n>` (default 3s, 0 waits forever) bounds
   `wait_for_target_window()`: `poll()` on the X connection fd
   (`ConnectionNumber(dpy)`), not `select()` or a sleep-poll loop — both
@@ -165,6 +191,17 @@ an app window, moves/resizes that window (standing in for the user
 repositioning it while they work) before closing it, then checks the
 terminal ends up at the app's last geometry rather than its own original
 spot.
+
+`run_occupy_flash_scenario` covers the *position* pre-map flash, using
+`xmessage`. `run_real_app_occupy_flash_scenario` (opportunistic, zathura/kate
+only) covers the *size* one: unlike the xmessage-based test, it doesn't fail
+on seeing more than one distinct pre-map size (a real app's own pre-map
+resize churn is expected and harmless, since the window isn't mapped yet) —
+it fails only if the size the window is *actually mapped at* differs from
+the size it later settles at, i.e. a real, visible post-map jump. Verified
+to actually catch the bug it targets by reverting the `PMinSize`/`PMaxSize`
+fix and confirming it fails (zathura: mapped at 798×577, settled at
+496×342) — not just theater that passes regardless.
 
 Everything runs against a nested Xephyr display, never the real desktop.
 

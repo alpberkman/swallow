@@ -1,10 +1,6 @@
 # swallow
 
-A minimal X11 command-line tool for Linux: launch a GUI application from a
-terminal, hide the terminal while the app's window is open, and bring the
-terminal back — in its original position and size — when the app closes.
-
-Targets Openbox, but relies only on standard ICCCM/EWMH conventions, so it
+A minimal X11 command-line tool for Linux: when launching a GUI application from a terminal, make the terminal window swallow the GUI. Placement of the the GUI application and the terminal can be partly be controlled by the options. However it is conclusively decided by the window manager. Targets Openbox, but relies only on standard ICCCM/EWMH conventions, so it
 should work with any reasonably-compliant reparenting window manager.
 
 ## Requirements
@@ -43,19 +39,17 @@ Run whatever you'd normally run from the terminal, prefixed with `swallow`.
 For example:
 
 ```sh
-swallow firefox
-swallow --occupy zathura document.pdf
+swallow pcmanfm
+swallow --occupy --remain --timeout 0 zathura document.pdf
 ```
 
-The terminal window disappears (not minimized — fully unmapped, so it drops
+The terminal window disappears (not minimized -- fully unmapped, so it drops
 out of the taskbar too) as soon as the launched app's window appears, and
-reappears in its original spot as soon as that window closes.
+reappears as soon as that window closes.
 
 ### Options
 
-All options control only where/how the *new* window is placed; they have no
-effect on the terminal's restore behavior, which always returns it to
-exactly where it was.
+These options control the size and placement of both the GUI applicaiton and the terminal.
 
 | Flag | Long form | Description |
 |---|---|---|
@@ -77,53 +71,51 @@ Notes:
 - `-x`/`-y`/`-w`/`-l` can be used individually or together for manual
   placement; any axis not given is left to the app/WM. They can't be
   combined with `--occupy`, which already determines the full geometry
-  itself — rejected outright rather than one silently overriding the other.
+  itself -- rejected outright rather than one silently overriding the other.
 - `--full-screen` composes with the other options rather than replacing
   them: it's an EWMH *state* layered on top, and it's the geometry the
-  window returns to if full-screen is later turned off — so e.g.
+  window returns to if full-screen is later turned off -- so e.g.
   `swallow --occupy --full-screen kate` starts full-screen but un-fullscreens
   back into the terminal's old spot.
 - `--timeout` guards against a command that never opens a window (a typo'd
-  binary, a crash on startup, a non-GUI command) — without it, `swallow`
-  would otherwise wait forever. If it times out, `swallow` exits non-zero
-  and the terminal is left untouched (it's never hidden until a window is
-  actually found).
-- `--remain` is a "reverse occupy": rather than the terminal always
-  snapping back to exactly where it started, it follows the app instead —
-  useful if you moved/resized the app window while using it and would
-  rather the terminal picked up from there than jump back to its old spot.
+  binary, a crash on startup, a non-GUI command) -- without it, `swallow`
+  would otherwise wait forever. However some applications might take a very long time to initialize their GUI (especially Java programs and IDEs) so having a very short timeout might prevent swallow to hide the terminal.
 
 ## How it works
 
 - The terminal is whatever window is active (`_NET_ACTIVE_WINDOW`) at the
   moment `swallow` starts.
 - The launched app's window is identified as the next new top-level window
-  to be created and mapped — not matched by PID, since many apps hand off to
+  to be created and mapped -- not matched by PID, since many apps hand off to
   a process with no relationship to what was actually exec'd (fork+exec
   launchers, double-fork daemonizing, or D-Bus/single-instance activation
   handing the window to an already-running process entirely).
-- The terminal is hidden via unmap (ICCCM Normal → Withdrawn) and restored
+- The terminal is hidden via unmap (ICCCM Normal -> Withdrawn) and restored
   via map, with its geometry explicitly reasserted and focus returned to it.
 - Waiting for that window is done with `poll()` on the X connection, bounded
-  by `--timeout`, rather than blocking forever — so a command that never
+  by `--timeout`, rather than blocking forever -- so a command that never
   opens a window doesn't hang `swallow` indefinitely.
 - `--occupy`/manual placement is set on the new window *before* it's ever
   mapped (as well as being reasserted right after, as a fallback), not just
-  after — some WMs (Openbox included) otherwise map a brand new window at
+  after -- some WMs (Openbox included) otherwise map a brand new window at
   its own default placement first, only jumping to the requested spot an
   instant later, which is just as visible a flash/jump as the terminal's own
-  restore below.
+  restore below. The requested size is also pinned as a temporary min/max
+  constraint, not just an initial hint -- otherwise a real app's own
+  self-resize (most GUI toolkits fit their initial window to their content)
+  can win the same race and cause the same kind of flash, just for size
+  instead of position.
 - With `--remain`, the app window's on-screen position/size is tracked as it
   moves or resizes (not just captured once), so the terminal ends up
   wherever it was left right before closing, however many times it moved in
   between. Its decoration insets are tracked the same way and used (instead
-  of the terminal's own) to convert that into the terminal's requested size —
+  of the terminal's own) to convert that into the terminal's requested size --
   otherwise `--occupy --remain` cycles would slowly drift the terminal's size
   whenever the app's decorations don't exactly match the terminal's.
 - Restoring the terminal sets its target geometry directly (before mapping
   it) rather than just asking the WM for it, since some WMs (Openbox
   included) otherwise remap a previously-hidden window straight back to
-  where it was before, only jumping to the correct spot an instant later —
+  where it was before, only jumping to the correct spot an instant later --
   a visible flash/jump on every restore. A `WM_NORMAL_HINTS` position hint
   is set too, as a fallback for WMs that behave differently.
 
@@ -134,11 +126,15 @@ make test
 ```
 
 Runs a real integration suite in a throwaway nested `Xephyr` + `openbox`
-session — it never touches your actual desktop. The suite skips cleanly if
+session -- it never touches your actual desktop. The suite skips cleanly if
 `Xephyr`/`openbox`/`xdotool`/`xprop` aren't installed, and opportunistically
 adds a couple of extra scenarios against `zathura`/`kate` if those happen to
 be installed too.
 
 ## License
 
-Add a license before publishing if you want one — none is currently included.
+Add a license before publishing if you want one -- none is currently included.
+
+## Note
+
+AI was used in the development of this project.
