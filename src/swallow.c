@@ -90,8 +90,8 @@ static void usage(const char *prog) {
         "--x/--y/--width/--length may be used individually or together to place\n"
         "the window manually; any not given are left to the app/WM. They cannot be\n"
         "combined with --occupy, which already determines the full geometry itself.\n"
-        "--full-screen can be used with any other flags since they set the actual\n"
-        "while full screen is more like a special form.\n",
+        "--full-screen can be used with any other flags since they set the actual geometry,\n"
+        "while full screen is more like a special view.\n",
         prog, DEFAULT_TIMEOUT_SEC);
 }
 
@@ -108,6 +108,13 @@ static int parse_long(const char *s, long *out) {
         return 0;
     *out = v;
     return 1;
+}
+
+/* Falls back to fallback when v isn't positive -- used to guard against a
+ * computed client size (frame size minus decoration insets) coming out zero
+ * or negative, e.g. from stale/mismatched frame extents. */
+static int clamp_positive(int v, int fallback) {
+    return v > 0 ? v : fallback;
 }
 
 static int x_error_handler(Display *dpy, XErrorEvent *e) {
@@ -478,12 +485,8 @@ int main(int argc, char **argv) {
      * term_attrs.width x term_attrs.height. */
     frame_extents_t extents;
     get_frame_extents(dpy, term_win, net_frame_extents, extents);
-    int client_w = term_attrs.width - extents[EXT_LEFT] - extents[EXT_RIGHT];
-    int client_h = term_attrs.height - extents[EXT_TOP] - extents[EXT_BOTTOM];
-    if(client_w <= 0)
-        client_w = term_attrs.width;
-    if(client_h <= 0)
-        client_h = term_attrs.height;
+    int client_w = clamp_positive(term_attrs.width - extents[EXT_LEFT] - extents[EXT_RIGHT], term_attrs.width);
+    int client_h = clamp_positive(term_attrs.height - extents[EXT_TOP] - extents[EXT_BOTTOM], term_attrs.height);
 
     /* Same geometry the post-map correction below would send, but applied
      * speculatively pre-map (see apply_pre_map_placement) so the new window
@@ -491,7 +494,7 @@ int main(int argc, char **argv) {
     XWindowChanges pl_wc = {0};
     unsigned int pl_mask = 0;
     if(want_occupy) {
-        pl_wc.x = term_attrs.x; 
+        pl_wc.x = term_attrs.x;
         pl_wc.y = term_attrs.y;
         pl_wc.width = client_w;
         pl_wc.height = client_h;
@@ -572,15 +575,16 @@ int main(int argc, char **argv) {
 
     /* --remain: track target's geometry (and its own decoration insets --
      * see below) as it moves/resizes, so that once it closes the terminal
-     * can take its place instead of its own old spot. Seeded here (rather
-     * than left zeroed) in case target closes before its first
-     * ConfigureNotify ever arrives. */
-    XWindowAttributes remain_attrs = { .x = term_attrs.x, .y = term_attrs.y,
-                                        .width = term_attrs.width, .height = term_attrs.height };
+     * can take its place instead of its own old spot. Reuses term_attrs
+     * itself (its original value is no longer needed past this point except
+     * as the !want_remain fallback, which is exactly what's left in it when
+     * tracking is off) rather than a second XWindowAttributes. Overwritten
+     * here (rather than left at target's stale pre-move value) in case
+     * target closes before its first ConfigureNotify ever arrives. */
     frame_extents_t remain_extents;
     memcpy(remain_extents, extents, sizeof(extents));
     if(want_remain) {
-        get_window_geometry(dpy, target, root, &remain_attrs);
+        get_window_geometry(dpy, target, root, &term_attrs);
         get_frame_extents(dpy, target, net_frame_extents, remain_extents);
     }
 
@@ -591,36 +595,32 @@ int main(int argc, char **argv) {
     XFlush(dpy);
 
     wait_for_window_close(dpy, root, target, net_frame_extents, want_remain,
-                           &remain_attrs, remain_extents);
+                           &term_attrs, remain_extents);
 
     /* Restore geometry: target's last-known spot for --remain, otherwise the
-     * terminal's own original spot. For --remain, remain_attrs.width/height
-     * is target's last FRAME size, so it has to be converted to a client size using
-     * target's OWN insets (remain_extents), not the
-     * terminal's -- using the terminal's insets here would only cancel out
-     * if the two windows happen to share identical decorations. When they
-     * don't (common: per-app theming, undecorated windows, etc.), that
-     * mismatch doesn't just misplace this one restore -- since --occupy's
-     * own placement of target was itself sized off of the terminal's
-     * previous geometry, using the wrong insets here feeds a slightly
-     * wrong size back as the terminal's new "previous geometry" for the
-     * *next* swallow invocation, compounding a little further every single
-     * cycle. Using target's own insets makes the round trip exact instead:
-     * the terminal's resulting frame ends up equal to remain_attrs.width/height
-     * either way, but its *client* size now matches target's actual client size,
-     * so repeated --occupy + --remain cycles stay stable indefinitely
-     * instead of drifting. */
-    int restore_x = term_attrs.x, restore_y = term_attrs.y, restore_w = client_w, restore_h = client_h;
-    if(want_remain) {
-        restore_x = remain_attrs.x;
-        restore_y = remain_attrs.y;
-        restore_w = remain_attrs.width - remain_extents[EXT_LEFT] - remain_extents[EXT_RIGHT];
-        restore_h = remain_attrs.height - remain_extents[EXT_TOP] - remain_extents[EXT_BOTTOM];
-        if(restore_w <= 0)
-            restore_w = remain_attrs.width;
-        if(restore_h <= 0)
-            restore_h = remain_attrs.height;
-    }
+     * terminal's own original spot -- term_attrs already holds whichever one
+     * applies, since wait_for_window_close only overwrites it when
+     * want_remain is set. For --remain, term_attrs.width/height is target's
+     * last FRAME size, so it has to be converted to a client size using
+     * target's OWN insets (remain_extents, which is a copy of the
+     * terminal's own insets when !want_remain -- so this expression already
+     * reduces to the same thing client_w/client_h computed above in that
+     * case), not the terminal's -- using the terminal's insets here would
+     * only cancel out if the two windows happen to share identical
+     * decorations. When they don't (common: per-app theming, undecorated
+     * windows, etc.), that mismatch doesn't just misplace this one restore
+     * -- since --occupy's own placement of target was itself sized off of
+     * the terminal's previous geometry, using the wrong insets here feeds a
+     * slightly wrong size back as the terminal's new "previous geometry" for
+     * the *next* swallow invocation, compounding a little further every
+     * single cycle. Using target's own insets makes the round trip exact
+     * instead: the terminal's resulting frame ends up equal to
+     * term_attrs.width/height either way, but its *client* size now matches
+     * target's actual client size, so repeated --occupy + --remain cycles
+     * stay stable indefinitely instead of drifting. */
+    int restore_x = term_attrs.x, restore_y = term_attrs.y;
+    int restore_w = clamp_positive(term_attrs.width - remain_extents[EXT_LEFT] - remain_extents[EXT_RIGHT], term_attrs.width);
+    int restore_h = clamp_positive(term_attrs.height - remain_extents[EXT_TOP] - remain_extents[EXT_BOTTOM], term_attrs.height);
 
     /* Withdrawing forgets the window's old spot as far as *placement policy*
      * (cascade/center/under-mouse/etc.) is concerned, but Openbox (at
