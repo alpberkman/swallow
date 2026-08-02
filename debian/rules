@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# install-files (not install) installs the swallow/swallow-auto/swallow-i3
+# commands only -- unlike `make install`, it deliberately skips the
+# ~/.bashrc shell-integration wiring, which has no sane meaning inside a
+# package build chroot. See the Makefile comment on install-files.
+override_dh_auto_install:
+	$(MAKE) DESTDIR=$(CURDIR)/debian/swallow PREFIX=/usr install-files
+
+# tests/run_tests.sh needs a real X session (Xephyr + Openbox + xdotool)
+# and isn't a Build-Depends -- not appropriate to run inside a package
+# build.
+override_dh_auto_test:

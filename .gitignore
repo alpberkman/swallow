@@ -1,1 +1,10 @@
 bin/
+
+# debhelper build byproducts (debian/rules binary / dpkg-buildpackage)
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/swallow/
+debian/swallow-dbgsym/
+debian/*.substvars
+debian/*.log

@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        cat <<'EOF'
+
+swallow: installed swallow, swallow-auto, and swallow-i3 to /usr/bin.
+
+Optional shell integration (wrap a fixed list of GUI apps so e.g. `kate
+file.txt` runs through swallow-auto automatically) is not wired into any
+~/.bashrc automatically. To enable it, add to your own ~/.bashrc:
+
+    SWALLOW_APPS=(kate zathura pcmanfm)   # edit to taste
+    SWALLOW_FLAGS="--remain --occupy --timeout 3"
+    source /usr/share/swallow/shell-integration.sh
+
+See /usr/share/doc/swallow/README.md for details.
+
+EOF
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

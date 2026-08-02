@@ -1,0 +1,6 @@
+swallow (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaging: builds swallow, and installs swallow, swallow-auto,
+    swallow-i3, and shell-integration.sh.
+
+ -- Alp Berkman <alpberkman@gmail.com>  Sun, 02 Aug 2026 15:25:02 +0200

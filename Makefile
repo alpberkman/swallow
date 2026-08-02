@@ -24,7 +24,7 @@ SWALLOW_FLAGS_LINE   := SWALLOW_FLAGS="--remain --occupy --timeout 3"
 SHELL_INTEGRATION    := $(CURDIR)/shell-integration.sh
 SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
-.PHONY: all clean install uninstall test
+.PHONY: all clean install install-files uninstall test deb
 
 all: $(BIN)
 
@@ -38,6 +38,15 @@ clean:
 	rm -f $(BIN)
 	$(MAKE) -C tests clean
 
+# Split from `install` so packaging (debian/rules) can install just the
+# binary/scripts into a DESTDIR without also touching a real ~/.bashrc --
+# there's no single right "the user" to wire shell integration for from a
+# postinst script, unlike here where $(BASHRC) unambiguously means yours.
+install-files: $(BIN)
+	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
+	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
+	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
+
 # The .bashrc line is a `source`, not a raw append of shell-integration.sh's
 # own code -- sourcing keeps its BASH_SOURCE-relative lookup of
 # swallow-auto.sh resolving to this repo, instead of to wherever .bashrc
@@ -50,10 +59,7 @@ clean:
 # as somewhere for you to list the apps shell-integration.sh should wrap
 # and the flags to launch them with; it's your .bashrc from here, not this
 # repo's.
-install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
-	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
-	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
+install: install-files
 	grep -qE '^SWALLOW_APPS=' $(BASHRC) 2>/dev/null || \
 		echo '$(SWALLOW_APPS_LINE)' >> $(BASHRC)
 	grep -qE '^SWALLOW_FLAGS=' $(BASHRC) 2>/dev/null || \
@@ -67,3 +73,9 @@ uninstall:
 test: $(BIN)
 	$(MAKE) -C tests
 	tests/run_tests.sh
+
+# dpkg-buildpackage drops the .deb (and .buildinfo/.changes) one directory
+# above this one -- that's its own convention, not something to fight.
+# -us -uc: don't GPG-sign, irrelevant for a local/unpublished build.
+deb:
+	dpkg-buildpackage -us -uc -b

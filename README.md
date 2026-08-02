@@ -72,6 +72,28 @@ make uninstall
 `uninstall` removes the three installed commands but leaves your
 `~/.bashrc` edits alone.
 
+## Packaging (.deb)
+
+```sh
+sudo apt-get install debhelper pkg-config libx11-dev  # build deps
+make deb
+sudo apt install ../swallow_0.1.0-1_amd64.deb
+```
+
+This builds `swallow`, `swallow-auto`, and `swallow-i3` into
+`/usr/bin`, and `shell-integration.sh` into `/usr/share/swallow/`.
+Unlike `make install`, packaging deliberately does **not** touch
+`~/.bashrc` -- there's no single right user to do that for from a
+postinst script -- so `apt install`ing the `.deb` prints a note with the
+three lines to add yourself if you want [shell
+integration](#shell-integration). `debian/rules` drives this via the
+Makefile's `install-files` target (installs the commands, nothing else)
+rather than `install` (which also does the `~/.bashrc` wiring).
+
+`dpkg-buildpackage` also skips `make test`: the test suite needs a real
+X session (Xephyr + Openbox + xdotool) that a package build environment
+won't have.
+
 ## Usage
 
 ```sh
@@ -220,7 +242,7 @@ session -- see [`swallow-i3/README.md`](swallow-i3/README.md#testing).
 
 ## License
 
-Add a license before publishing if you want one -- none is currently included.
+GPLv3 or later -- see [`LICENSE`](LICENSE).
 
 ## Note
 
