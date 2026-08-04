@@ -9,7 +9,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$ROOT_DIR/bin"
-SWALLOW="$BIN_DIR/swallow"
+SWALLOW="$BIN_DIR/swallow-generic"
 FORK_HELPER="$BIN_DIR/fork_exec_helper"
 PHANTOM_HELPER="$BIN_DIR/phantom_window_helper"
 GEOM_TRACE_HELPER="$BIN_DIR/geom_trace_helper"
@@ -1160,7 +1160,7 @@ if command -v xterm >/dev/null 2>&1; then
     run_real_app_scenario "xterm (real app)" xterm xterm
     # No occupy-flash sub-scenario for xterm, unlike the other real apps: it
     # has a known, understood pre-map size flash (see apply_pre_map_placement
-    # in src/swallow.c) that isn't fixed, so the check would just fail every
+    # in src/swallow-generic.c) that isn't fixed, so the check would just fail every
     # run rather than catch a regression.
 else
     log "Scenario: xterm (real app) -- SKIPPED (xterm not installed)"

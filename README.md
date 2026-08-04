@@ -12,20 +12,21 @@ one setup across both.
 ## Components
 
 The repo builds/installs four pieces; day to day you only invoke
-`swallow-auto` (directly, or via the shell integration below) and let it
+`swallow` (directly, or via the shell integration below) and let it
 pick the rest:
 
-- **`swallow`** (this doc) -- the C/X11 binary, documented below. Works
-  under any reasonably-compliant reparenting WM, Openbox included.
+- **`swallow-generic`** (this doc) -- the C/X11 binary, documented below.
+  Works under any reasonably-compliant reparenting WM, Openbox included.
 - **[`swallow-i3/`](swallow-i3/README.md)** -- a separate bash
   implementation for i3/sway, built on their IPC instead of raw X11. Own
   build-free install, own flags (or lack thereof), own README -- it shares
-  no code with `swallow` beyond the name and the general idea.
-- **[`swallow-auto.sh`](swallow-auto.sh)** -- installed as `swallow-auto`.
-  Detects whether i3/sway is actually running (not just installed) and
-  dispatches to `swallow-i3` or `swallow` accordingly, stripping
-  `swallow`-only flags first when it picks `swallow-i3` (which takes none
-  of its own). This is what makes one setup portable across WMs.
+  no code with `swallow-generic` beyond the name and the general idea.
+- **[`swallow-auto.sh`](swallow-auto.sh)** -- installed as `swallow`, the
+  command you actually type day to day. Detects whether i3/sway is
+  actually running (not just installed) and dispatches to `swallow-i3` or
+  `swallow-generic` accordingly, stripping `swallow-generic`-only flags
+  first when it picks `swallow-i3` (which takes none of its own). This is
+  what makes one setup portable across WMs.
 - **[`shell-integration.sh`](#shell-integration)** -- wraps a fixed list of
   GUI apps in same-named bash functions that call `swallow-auto`, so you can
   type `kate file.txt` instead of `swallow-auto --occupy --remain --timeout
@@ -45,7 +46,7 @@ pick the rest:
 make
 ```
 
-This produces a single `swallow` binary in `bin/`.
+This produces a single `swallow-generic` binary in `bin/`.
 
 ## Install
 
@@ -54,10 +55,11 @@ make install                    # installs to ~/.local/bin
 make install PREFIX=/usr/local  # or any other prefix (needs sudo for a system dir)
 ```
 
-Installs three commands: `swallow` itself, `swallow-auto` (picks between
-`swallow` and `swallow-i3` based on the running WM -- see
-`swallow-auto.sh`), and `swallow-i3` (the i3/sway-specific script in
-`swallow-i3/`, copied in as-is -- it has no build step of its own).
+Installs three commands: `swallow` (`swallow-auto.sh`, the dispatcher you
+actually run -- picks between `swallow-generic` and `swallow-i3` based on
+the running WM), `swallow-generic` itself (the compiled C/X11 binary), and
+`swallow-i3` (the i3/sway-specific script in `swallow-i3/`, copied in as-is
+-- it has no build step of its own).
 
 It also sets up [shell integration](#shell-integration) in `~/.bashrc`:
 an empty `SWALLOW_APPS=()` line, a default `SWALLOW_FLAGS=...` line, and a
@@ -80,7 +82,7 @@ make deb
 sudo apt install ../swallow_0.1.0-1_amd64.deb
 ```
 
-This builds `swallow`, `swallow-auto`, and `swallow-i3` into
+This builds `swallow`, `swallow-generic`, and `swallow-i3` into
 `/usr/bin`, and `shell-integration.sh` into `/usr/share/swallow/`.
 Unlike `make install`, packaging deliberately does **not** touch
 `~/.bashrc` -- there's no single right user to do that for from a
@@ -170,18 +172,19 @@ Fill in `SWALLOW_APPS` with whatever you want wrapped, e.g.
 taste. Each app in the list gets a same-named bash function that shadows
 the real binary for interactive shell use only (`.desktop` launchers and
 scripts calling the binary directly are unaffected; use `command kate` to
-bypass the wrapper). The functions call `swallow-auto`, not `swallow`
+bypass the wrapper). The functions call the auto-dispatcher
+(`swallow-auto.sh`, installed as `swallow`), not `swallow-generic`
 directly, so the same setup works whether you're running Openbox, i3, or
 sway that session -- see `swallow-auto.sh`.
 
 ## How it works
 
-This section covers the `swallow` binary specifically -- see
+This section covers the `swallow-generic` binary specifically -- see
 [`swallow-i3/README.md`](swallow-i3/README.md#how-it-works) for how the
 i3/sway implementation works instead; the two share no mechanism.
 
 - The terminal is whatever window is active (`_NET_ACTIVE_WINDOW`) at the
-  moment `swallow` starts.
+  moment `swallow-generic` starts.
 - The launched app's window is identified as the next new top-level window
   to be created and mapped -- not matched by PID, since many apps hand off to
   a process with no relationship to what was actually exec'd (fork+exec
@@ -191,7 +194,7 @@ i3/sway implementation works instead; the two share no mechanism.
   via map, with its geometry explicitly reasserted and focus returned to it.
 - Waiting for that window is done with `poll()` on the X connection, bounded
   by `--timeout`, rather than blocking forever -- so a command that never
-  opens a window doesn't hang `swallow` indefinitely.
+  opens a window doesn't hang `swallow-generic` indefinitely.
 - `--occupy`/manual placement is set on the new window *before* it's ever
   mapped (as well as being reasserted right after, as a fallback), not just
   after -- some WMs (Openbox included) otherwise map a brand new window at
@@ -216,7 +219,7 @@ i3/sway implementation works instead; the two share no mechanism.
   a visible flash/jump on every restore. A `WM_NORMAL_HINTS` position hint
   is set too, as a fallback for WMs that behave differently.
 - With `--kill`, none of the restore step above happens -- instead
-  `swallow` sends the terminal a `WM_DELETE_WINDOW` message directly (the
+  `swallow-generic` sends the terminal a `WM_DELETE_WINDOW` message directly (the
   same protocol message `wmctrl -c` or a WM's own close button use). It's
   a request, not a forced kill: an ICCCM-compliant terminal can still
   decline (e.g. prompt on unsaved output) exactly as if its own close

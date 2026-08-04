@@ -5,9 +5,9 @@
 #
 # - i3/sway: swallow-i3.sh -- it needs their IPC anyway, and gets extra
 #   scratchpad/tiling behavior that only that IPC can provide.
-# - anything else (Openbox, etc): swallow, the plain X11 binary.
+# - anything else (Openbox, etc): swallow-generic, the plain X11 binary.
 #
-# Args are passed straight through to swallow -- it's the one that
+# Args are passed straight through to swallow-generic -- it's the one that
 # understands its own flags. swallow-i3.sh has none of its own (its
 # behavior is fixed) and would misread a leading "--occupy" or "--remain"
 # as the command to run, so those are stripped first when it's the one
@@ -20,22 +20,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Prefer the installed names on $PATH (what `make install` puts in
 # $PREFIX/bin, e.g. ~/.local/bin) over the repo-relative dev paths --
-# once installed, this script no longer sits next to bin/swallow or
+# once installed, this script no longer sits next to bin/swallow-generic or
 # swallow-i3/swallow-i3.sh, so SCRIPT_DIR-relative lookups alone would
 # break for an installed copy. Falls back to the repo layout so this
 # still works run straight out of a checkout, unbuilt-into-PATH.
+#
+# Looks for swallow-generic specifically, not swallow -- this script is
+# itself installed as `swallow` (the auto-dispatching entry point), so a
+# `command -v swallow` check here would just find itself.
 if command -v swallow-i3 >/dev/null 2>&1; then
     SWALLOW_I3=swallow-i3
 else
     SWALLOW_I3="$SCRIPT_DIR/swallow-i3/swallow-i3.sh"
 fi
-if command -v swallow >/dev/null 2>&1; then
-    SWALLOW_BIN=swallow
+if command -v swallow-generic >/dev/null 2>&1; then
+    SWALLOW_BIN=swallow-generic
 else
-    SWALLOW_BIN="$SCRIPT_DIR/bin/swallow"
+    SWALLOW_BIN="$SCRIPT_DIR/bin/swallow-generic"
 fi
 
-# List kept in sync with `bin/swallow --help`. is_value_flag marks the
+# List kept in sync with `bin/swallow-generic --help`. is_value_flag marks the
 # ones that consume a following arg (-x 10, not just -x).
 is_swallow_flag() {
     case "$1" in

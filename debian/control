@@ -17,12 +17,12 @@ Description: swallow a terminal into a launched GUI app's window
  the terminal to wherever the window ended up instead, or, with
  --kill, closes the terminal instead of restoring it.
  .
- This package installs three commands: swallow, the C/X11
+ This package installs three commands: swallow-generic, the C/X11
  implementation for Openbox and other reparenting ICCCM/EWMH window
  managers; swallow-i3, a separate implementation for i3/sway built on
- their IPC (needs jq); and swallow-auto, which picks between the two
+ their IPC (needs jq); and swallow, which picks between the two
  based on which window manager is actually running. Optional shell
  integration for wrapping a fixed list of GUI apps so they're launched
- through swallow-auto automatically is shipped as
+ through swallow automatically is shipped as
  /usr/share/swallow/shell-integration.sh but not wired into any
  ~/.bashrc automatically -- see /usr/share/doc/swallow/README.md.

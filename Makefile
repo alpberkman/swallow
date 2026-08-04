@@ -8,12 +8,12 @@ LIBS     := $(shell $(PKG_CONFIG) --libs x11)
 PREFIX   ?= $(HOME)/.local
 BINDIR   := $(PREFIX)/bin
 
-SRC     := src/swallow.c
-BINNAME := swallow
+SRC     := src/swallow-generic.c
+BINNAME := swallow-generic
 OUTDIR  := bin
 BIN     := $(OUTDIR)/$(BINNAME)
 
-AUTONAME := swallow-auto
+AUTONAME := swallow
 AUTOSRC  := swallow-auto.sh
 I3NAME   := swallow-i3
 I3SRC    := swallow-i3/swallow-i3.sh

@@ -96,8 +96,17 @@ child_pid=$!
 child_running=1
 exit_time=0
 
+buf=""
 while true; do
-    if read -r -t 0.5 -u 3 line; then
+    # `read -t` can time out mid-line on a large/slow event; bash still
+    # consumes what it read so far into $chunk but the `if` only fires on a
+    # full line, so a naive version here would silently drop that fragment
+    # -- the next successful read then gets fed only the *tail* of the same
+    # JSON line, and jq chokes on it. Buffer across timeouts instead of
+    # discarding, so a line split across polls is reassembled correctly.
+    if IFS= read -r -t 0.5 -u 3 chunk; then
+        line="$buf$chunk"
+        buf=""
         IFS=$'\t' read -r change win <<<"$(jq -r '[.change, (.container.window // "")] | @tsv' <<<"$line")"
         if [ "$have_app" = 0 ] && [ "$change" = new ] && [ -n "$win" ] && [ "$win" != "$term" ]; then
             app_win=$win
@@ -123,6 +132,8 @@ while true; do
             restore_term "${a_floating:-$t_floating}" "${ax:-$tx}" "${ay:-$ty}" "${aw:-$tw}" "${ah:-$th}"
             exit 0
         fi
+    else
+        buf+="$chunk"
     fi
 
     if [ "$child_running" = 1 ] && ! kill -0 "$child_pid" 2>/dev/null; then

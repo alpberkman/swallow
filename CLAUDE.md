@@ -17,21 +17,22 @@ code or a build system with it.
 ## Build / install / test
 
 ```
-make            # builds bin/swallow (needs pkg-config + libx11-dev)
+make            # builds bin/swallow-generic (needs pkg-config + libx11-dev)
 make test       # builds test helpers (into bin/ too), then runs the suite
 make install    # installs to $PREFIX/bin (default ~/.local/bin, no sudo needed)
 make clean
 ```
 
-There is only one source file: `src/swallow.c`. No other build system, no
-dependencies beyond libX11. All build outputs (`swallow` itself and the test
-helper binaries under `tests/`) land in a single top-level `bin/` directory,
-gitignored, built by both `Makefile` and `tests/Makefile` via a shared
-`../bin`/`bin` `OUTDIR`.
+There is only one source file: `src/swallow-generic.c`. No other build
+system, no dependencies beyond libX11. All build outputs (`swallow-generic`
+itself and the test helper binaries under `tests/`) land in a single
+top-level `bin/` directory, gitignored, built by both `Makefile` and
+`tests/Makefile` via a shared `../bin`/`bin` `OUTDIR`.
 
-`install` also copies in `swallow-auto.sh` (as `swallow-auto`) and
-`swallow-i3/swallow-i3.sh` (as `swallow-i3`) alongside the compiled
-binary, and idempotently wires `~/.bashrc` for `shell-integration.sh`: an
+`install` also copies in `swallow-auto.sh` (as `swallow`, the dispatching
+entry point users actually invoke) and `swallow-i3/swallow-i3.sh` (as
+`swallow-i3`) alongside the compiled binary (as `swallow-generic`), and
+idempotently wires `~/.bashrc` for `shell-integration.sh`: an
 empty `SWALLOW_APPS=()` line, a default `SWALLOW_FLAGS=...` line, and a
 `source .../shell-integration.sh` line, each appended only if no line
 with that name/exact content already exists -- so re-running `install`

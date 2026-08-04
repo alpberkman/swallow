@@ -5,7 +5,7 @@ case "$1" in
     configure)
         cat <<'EOF'
 
-swallow: installed swallow, swallow-auto, and swallow-i3 to /usr/bin.
+swallow: installed swallow, swallow-generic, and swallow-i3 to /usr/bin.
 
 Optional shell integration (wrap a fixed list of GUI apps so e.g. `kate
 file.txt` runs through swallow-auto automatically) is not wired into any

@@ -1,8 +1,8 @@
 /*
- * swallow -- run a GUI app from a terminal, hide the terminal while the
- * app's window is open, and restore it when the app closes.
+ * swallow-generic -- run a GUI app from a terminal, hide the terminal while
+ * the app's window is open, and restore it when the app closes.
  *
- * Usage: swallow <command> [args...]
+ * Usage: swallow-generic <command> [args...]
  */
 
 #include <X11/Xlib.h>
@@ -313,7 +313,7 @@ static void wait_for_window_close(Display *dpy, Window root, Window target, Atom
  * 1 from main() on failure. */
 #define PARSE_ARG(var, ok, msg) do { \
         if(!parse_long(optarg, &(var)) || !(ok)) { \
-            fprintf(stderr, "swallow: " msg "\n"); \
+            fprintf(stderr, "swallow-generic: " msg "\n"); \
             return 1; \
         } \
     } while(0)
@@ -361,20 +361,20 @@ int main(int argc, char **argv) {
     }
 
     if(want_default && want_occupy) {
-        fprintf(stderr, "swallow: --default and --occupy are mutually exclusive\n");
+        fprintf(stderr, "swallow-generic: --default and --occupy are mutually exclusive\n");
         return 1;
     }
     if(want_kill && want_remain) {
         /* --remain only controls where the terminal is restored to; --kill
          * skips restoring it entirely, so combining them can only mean one
          * flag's intent was ignored. */
-        fprintf(stderr, "swallow: --kill and --remain are mutually exclusive\n");
+        fprintf(stderr, "swallow-generic: --kill and --remain are mutually exclusive\n");
         return 1;
     }
     if(want_occupy && (have_x || have_y || have_w || have_l)) {
         /* --occupy already determines the full geometry; silently
          * overriding one axis would leave it unclear which wins. */
-        fprintf(stderr, "swallow: --occupy cannot be combined with -x/-y/-w/-l\n");
+        fprintf(stderr, "swallow-generic: --occupy cannot be combined with -x/-y/-w/-l\n");
         return 1;
     }
     if(optind >= argc) {
@@ -385,7 +385,7 @@ int main(int argc, char **argv) {
 
     Display *dpy = XOpenDisplay(NULL);
     if(!dpy) {
-        fprintf(stderr, "swallow: cannot open X display\n");
+        fprintf(stderr, "swallow-generic: cannot open X display\n");
         return 1;
     }
     XSetErrorHandler(x_error_handler);
@@ -399,7 +399,7 @@ int main(int argc, char **argv) {
 
     Window term_win = get_active_window(dpy, root, net_active_window);
     if(term_win == None) {
-        fprintf(stderr, "swallow: could not determine the terminal window\n");
+        fprintf(stderr, "swallow-generic: could not determine the terminal window\n");
         return 1;
     }
 
@@ -442,18 +442,18 @@ int main(int argc, char **argv) {
 
     pid_t child = fork();
     if(child < 0) {
-        perror("swallow: fork");
+        perror("swallow-generic: fork");
         return 1;
     }
     if(child == 0) {
         execvp(cmd_argv[0], cmd_argv);
-        fprintf(stderr, "swallow: exec %s: %s\n", cmd_argv[0], strerror(errno));
+        fprintf(stderr, "swallow-generic: exec %s: %s\n", cmd_argv[0], strerror(errno));
         _exit(127);
     }
 
     Window target = wait_for_target_window(dpy, root, timeout_sec, pl_wc, pl_mask);
     if(target == None) {
-        fprintf(stderr, "swallow: timed out after %lds waiting for a window from %s\n",
+        fprintf(stderr, "swallow-generic: timed out after %lds waiting for a window from %s\n",
                 timeout_sec, cmd_argv[0]);
         XCloseDisplay(dpy);
         return 1;
