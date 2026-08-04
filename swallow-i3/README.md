@@ -41,7 +41,7 @@ cp swallow-i3.sh ~/.local/bin/swallow-i3
 ## Usage
 
 ```sh
-swallow-i3.sh <command> [args...]
+swallow-i3.sh [--kill] [--full-screen] <command> [args...]
 ```
 
 Run whatever you'd normally run from your terminal, prefixed with
@@ -49,13 +49,24 @@ Run whatever you'd normally run from your terminal, prefixed with
 
 ```sh
 swallow-i3.sh zathura document.pdf
+swallow-i3.sh --full-screen mpv video.mp4
+swallow-i3.sh --kill pcmanfm
 ```
 
-Unlike `swallow`, there are no placement/timeout flags -- everything is
-driven by i3/sway's own tiling and scratchpad behavior instead. The one
-tunable is `GRACE` (default 10s), a constant at the top of the script: how
-long to keep waiting for a window after the launched command's own process
-has already exited, before giving up (see "How it works" below).
+- `--kill`: when the app's window closes, close the terminal (via i3's own
+  `kill` command, sent straight to it) instead of bringing it back from the
+  scratchpad.
+- `--full-screen`: fullscreen the app's window as soon as it appears, on
+  top of the usual scratchpad-swap placement -- i3 remembers the
+  non-fullscreen rect on its own, so un-fullscreening later returns to that
+  spot.
+
+Beyond those two, there are no other placement/timeout flags -- everything
+else is driven by i3/sway's own tiling and scratchpad behavior instead. The
+one other tunable is `GRACE` (default 10s), a constant at the top of the
+script: how long to keep waiting for a window after the launched command's
+own process has already exited, before giving up (see "How it works"
+below).
 
 ## How it works
 
@@ -87,20 +98,25 @@ has already exited, before giving up (see "How it works" below).
   process never exits either (e.g. it backgrounds/daemonizes), there's no
   overall cap -- the loop just keeps waiting for a window.
 - `INT`/`TERM` (e.g. Ctrl-C) restore the terminal at its original
-  pre-launch spot before exiting, since there's no app-close event to read
-  a live rect from in that path.
+  pre-launch spot before exiting (or kill it instead, with `--kill`),
+  since there's no app-close event to read a live rect from in that path.
+- `--kill` sends i3's own `kill` command to the terminal's `id`, the IPC
+  equivalent of `swallow`'s `WM_DELETE_WINDOW`-then-`XKillClient`
+  `close_window()` -- no need to hand-roll that here.
 
 ## Differences from `swallow`
 
 - i3/sway only, not portable to other window managers.
-- No `-o/--occupy`, `-x/-y/-w/-l`, or `-f/--full-screen` flags -- placement
-  is entirely i3/sway's tiling model plus the scratchpad swap described
-  above, not manually specified geometry.
+- No `-o/--occupy` or `-x/-y/-w/-l` flags -- placement is entirely
+  i3/sway's tiling model plus the scratchpad swap described above, not
+  manually specified geometry. `-f/--full-screen` and `-k/--kill` *are*
+  supported, as `--full-screen`/`--kill` (see Usage above).
 - No `-t/--timeout` flag; `GRACE` plays a related but narrower role (see
   above) and is a constant in the script, not a CLI option.
 - Always behaves like `swallow --remain`: the terminal comes back at the
-  app's last position/size, not its own original spot. There's no flag to
-  opt out of this.
+  app's last position/size, not its own original spot (unless `--kill` is
+  given, in which case it's closed instead). There's no flag to opt out of
+  the `--remain`-like behavior specifically.
 - Uses the scratchpad rather than a raw unmap, and actively resizes the
   launched app into the terminal's tiled slot -- the counterpart to
   `swallow`'s pre-map placement/flash-avoidance work, but achieved through

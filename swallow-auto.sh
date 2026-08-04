@@ -8,12 +8,13 @@
 # - anything else (Openbox, etc): swallow-generic, the plain X11 binary.
 #
 # Args are passed straight through to swallow-generic -- it's the one that
-# understands its own flags. swallow-i3.sh has none of its own (its
-# behavior is fixed) and would misread a leading "--occupy" or "--remain"
-# as the command to run, so those are stripped first when it's the one
-# being dispatched to -- see strip_swallow_flags below. This is what lets
-# one caller (e.g. shell-integration.sh) use the same invocation
-# regardless of which WM ends up handling it.
+# understands its own flags. swallow-i3.sh only understands --kill and
+# --full-screen of its own (everything else is fixed by i3's tiling model)
+# and would misread a leading "--occupy" or "--remain" as the command to
+# run, so those are stripped first when it's the one being dispatched to
+# -- see strip_swallow_flags below. This is what lets one caller (e.g.
+# shell-integration.sh) use the same invocation regardless of which WM
+# ends up handling it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,11 +56,29 @@ is_value_flag() {
     esac
 }
 
+# swallow-i3.sh's own subset of is_swallow_flag -- these are passed through
+# rather than stripped when dispatching to it, since it understands them
+# itself (see swallow-i3.sh's own flag parsing).
+is_i3_flag() {
+    case "$1" in
+        -k|--kill|-f|--full-screen) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 strip_swallow_flags() {
+    kept=()
     while [ "$#" -gt 0 ] && is_swallow_flag "$1"; do
-        if is_value_flag "$1"; then shift 2; else shift; fi
+        if is_i3_flag "$1"; then
+            kept+=("$1")
+            shift
+        elif is_value_flag "$1"; then
+            shift 2
+        else
+            shift
+        fi
     done
-    printf '%s\0' "$@"
+    printf '%s\0' "${kept[@]}" "$@"
 }
 
 # $SWAYSOCK is set by sway itself (never by i3); a live `i3-msg -t

@@ -17,8 +17,20 @@ set -u
 
 GRACE=10 # seconds to wait for a window after the launched process exits
 
+KILL=0
+FULLSCREEN=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --kill) KILL=1; shift ;;
+        --full-screen) FULLSCREEN=1; shift ;;
+        --) shift; break ;;
+        -*) echo "swallow-i3: unknown flag: $1" >&2; exit 1 ;;
+        *) break ;;
+    esac
+done
+
 if [ "$#" -lt 1 ]; then
-    echo "usage: $0 <command> [args...]" >&2
+    echo "usage: $0 [--kill] [--full-screen] <command> [args...]" >&2
     exit 1
 fi
 command -v jq >/dev/null || { echo "swallow-i3: jq not found" >&2; exit 1; }
@@ -85,8 +97,18 @@ restore_term() {
     fi
 }
 
+# --kill: close the terminal (i3's "kill", the IPC equivalent of swallow's
+# WM_DELETE_WINDOW/XKillClient close_window()) instead of restoring it.
+finish_term() {
+    if [ "$KILL" = 1 ]; then
+        "$msg" "[id=\"$term\"] kill" >/dev/null
+    else
+        restore_term "$1" "$2" "$3" "$4" "$5"
+    fi
+}
+
 restore_and_exit() {
-    [ "$have_app" = 1 ] && restore_term "$t_floating" "$tx" "$ty" "$tw" "$th"
+    [ "$have_app" = 1 ] && finish_term "$t_floating" "$tx" "$ty" "$tw" "$th"
     exit 0
 }
 trap restore_and_exit INT TERM
@@ -98,12 +120,8 @@ exit_time=0
 
 buf=""
 while true; do
-    # `read -t` can time out mid-line on a large/slow event; bash still
-    # consumes what it read so far into $chunk but the `if` only fires on a
-    # full line, so a naive version here would silently drop that fragment
-    # -- the next successful read then gets fed only the *tail* of the same
-    # JSON line, and jq chokes on it. Buffer across timeouts instead of
-    # discarding, so a line split across polls is reassembled correctly.
+    # `read -t` can time out mid-line on a slow event; buffer across
+    # timeouts instead of discarding, or jq gets fed a truncated JSON line.
     if IFS= read -r -t 0.5 -u 3 chunk; then
         line="$buf$chunk"
         buf=""
@@ -122,6 +140,8 @@ while true; do
             else
                 "$msg" "[id=\"$app_win\"] resize set $tw $th" >/dev/null 2>/dev/null
             fi
+            # i3 remembers the rect set above, so un-fullscreening later returns to it.
+            [ "$FULLSCREEN" = 1 ] && "$msg" "[id=\"$app_win\"] fullscreen enable" >/dev/null
         elif [ "$have_app" = 1 ] && [ "$change" = close ] && [ "$win" = "$app_win" ]; then
             # The close event's own payload carries the app's rect/floating
             # as of closing -- use that instead of the terminal's original
@@ -129,7 +149,7 @@ while true; do
             read -r a_floating ax ay aw ah < <(
                 jq -r '.container | "\(if .floating=="user_on" or .floating=="auto_on" then 1 else 0 end) \(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"' <<<"$line"
             )
-            restore_term "${a_floating:-$t_floating}" "${ax:-$tx}" "${ay:-$ty}" "${aw:-$tw}" "${ah:-$th}"
+            finish_term "${a_floating:-$t_floating}" "${ax:-$tx}" "${ay:-$ty}" "${aw:-$tw}" "${ah:-$th}"
             exit 0
         fi
     else

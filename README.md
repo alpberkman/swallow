@@ -25,8 +25,9 @@ pick the rest:
   command you actually type day to day. Detects whether i3/sway is
   actually running (not just installed) and dispatches to `swallow-i3` or
   `swallow-generic` accordingly, stripping `swallow-generic`-only flags
-  first when it picks `swallow-i3` (which takes none of its own). This is
-  what makes one setup portable across WMs.
+  first when it picks `swallow-i3` (which understands `--kill` and
+  `--full-screen` itself, but nothing else). This is what makes one setup
+  portable across WMs.
 - **[`shell-integration.sh`](#shell-integration)** -- wraps a fixed list of
   GUI apps in same-named bash functions that call `swallow-auto`, so you can
   type `kate file.txt` instead of `swallow-auto --occupy --remain --timeout
