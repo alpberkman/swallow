@@ -1,117 +1,136 @@
 #!/bin/bash
-# swallow-i3.sh: hide the launching i3 terminal while the launched
-# command's window is open, restore + refocus it on close. If the terminal
-# was floating, the new window is forced into floating mode at the
-# terminal's rect (i3 doesn't inherit floating state for newly-spawned
-# windows); if it was tiled, the new window is instead force-resized to
-# the terminal's exact tiled size (i3's own reflow doesn't reliably land
-# it there on its own -- see the "new" event handler below). i3-msg
-# handles the IPC protocol and jq handles the JSON, so there's no
-# hand-rolled socket framing or brace-matching here.
+# swallow-i3.sh hides the terminal window. The terminal starts the
+# command. When the new window opens, swallow-i3.sh hides the terminal.
+# When the new window closes, swallow-i3.sh shows the terminal again and
+# gives it focus.
 #
-# Also works under sway: sway implements the same IPC protocol and command
-# language (get_tree, window subscribe, scratchpad, floating, move/resize),
-# so every command below runs unmodified against either compositor -- see
-# the swaymsg/i3-msg selection right below.
+# --occupy makes the new window take the terminal's exact spot. If the
+# terminal was floating, the script moves the new window to a floating
+# position, using the terminal's old position and size. i3 does not give
+# this floating state to new windows on its own. If the terminal was
+# tiled, the script sets the new window to the terminal's exact tiled
+# size. i3 does not always do this step on its own. See the "new" event
+# handler below for the code. Without --occupy, the new window is placed
+# however i3's own default policy would place it.
+#
+# --remain restores the terminal to wherever the app's window ended up,
+# instead of the terminal's original position/size -- for example if the
+# user moved or resized the app window while it was open. Without
+# --remain, the terminal returns to its original spot.
+#
+# i3-msg sends the IPC commands. jq reads the JSON output. This script
+# does not parse the socket data by hand.
+#
+# This script also works under sway. Sway uses the same IPC protocol and
+# the same commands: get_tree, window subscribe, scratchpad, floating,
+# move, and resize. Every command below works on both programs without
+# change. See the swaymsg/i3-msg check below.
 set -u
 
-GRACE=10 # seconds to wait for a window after the launched process exits
-
+TIMEOUT=3
 KILL=0
 FULLSCREEN=0
+OCCUPY=0
+REMAIN=0
 while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --kill) KILL=1; shift ;;
-        --full-screen) FULLSCREEN=1; shift ;;
-        --) shift; break ;;
-        -*) echo "swallow-i3: unknown flag: $1" >&2; exit 1 ;;
-        *) break ;;
-    esac
+  case "$1" in
+    -k|--kill) KILL=1; shift ;;
+    -f|--full-screen) FULLSCREEN=1; shift ;;
+    -o|--occupy) OCCUPY=1; shift ;;
+    -r|--remain) REMAIN=1; shift ;;
+    -t|--timeout) TIMEOUT="${2:-}"; shift 2 ;;
+    --) shift; break ;;
+    -*|--*) echo "swallow-i3: unknown flag: $1" >&2; exit 1 ;;
+    *) break ;;
+  esac
 done
 
+if [[ ! "$TIMEOUT" =~ ^[0-9]+$ ]]; then
+  echo "swallow-i3: --timeout requires a numeric value" >&2
+  exit 1
+fi
+
 if [ "$#" -lt 1 ]; then
-    echo "usage: $0 [--kill] [--full-screen] <command> [args...]" >&2
-    exit 1
+  echo "usage: $0 [-k|--kill] [-f|--full-screen] [-o|--occupy] [-r|--remain] [-t|--timeout <seconds>] <command> [args...]" >&2
+  exit 1
 fi
-command -v jq >/dev/null || { echo "swallow-i3: jq not found" >&2; exit 1; }
 
-# $SWAYSOCK is set by sway itself (never by i3), so its presence is what
-# tells the two apart -- prefer swaymsg in that case, else fall back to
-# i3-msg. Everything past this point goes through $msg instead of calling
-# either binary by name.
-if [ -n "${SWAYSOCK:-}" ] && command -v swaymsg >/dev/null; then
-    msg=swaymsg
+if ! command -v jq >/dev/null; then
+  echo "swallow-i3: jq not found" >&2
+  exit 1
+fi
+
+if [ -n "${I3SOCK:-}" ] && command -v i3-msg >/dev/null; then
+  msg=i3-msg
+elif [ -n "${SWAYSOCK:-}" ] && command -v swaymsg >/dev/null; then
+  msg=swaymsg
 else
-    command -v i3-msg >/dev/null || { echo "swallow-i3: i3-msg not found" >&2; exit 1; }
-    msg=i3-msg
+  echo "swallow-i3: neither i3-msg nor swaymsg are found" >&2
+  exit 1
 fi
 
-term="${WINDOWID:-}"
-[[ "$term" =~ ^[0-9]+$ ]] || term="" # reject anything but a plain decimal id
-if [ -z "$term" ]; then
-    term=$("$msg" -t get_tree |
-        jq -r '[.. | objects | select(.focused == true) | .window // empty][0] // empty')
-fi
+term=$("$msg" -t get_tree |
+  jq -r 'first(.. | objects | select(.focused).window) // empty')
 if [ -z "$term" ] || [ "$term" = "null" ]; then
-    echo "swallow-i3: could not determine terminal window" >&2
-    exit 1
+  echo "swallow-i3: could not determine terminal window" >&2
+  exit 1
 fi
 
-# Capture floating state + rect before anything moves.
+# Record the terminal's floating state and rectangle now, before any window moves.
 read -r t_floating tx ty tw th < <(
-    "$msg" -t get_tree | jq -r --argjson w "$term" '
-        [.. | objects | select(.window? == $w)][0] |
-        "\(if .floating=="user_on" or .floating=="auto_on" then 1 else 0 end) \(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"'
+  "$msg" -t get_tree | jq -r --argjson w "$term" '
+    first(.. | objects | select(.window? == $w)) |
+    "\(if .floating | IN("user_on", "auto_on") then 1 else 0 end) \(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"'
 )
 
-# Subscribe before forking, so we can't miss the child's "new" event.
+# Subscribe to window events before you start the command. This way, the
+# script cannot miss the "new window" event from the command.
 exec 3< <("$msg" -t subscribe -m '["window"]')
 
 have_app=0
 app_win=""
+w_floating=""
+w_x=""
+w_y=""
+w_w=""
+w_h=""
 
-# "scratchpad show" always leaves a window floating -- that's inherent to
-# how i3's scratchpad works, not something it undoes on its own. Correct for
-# it: re-apply the given rect if it was floating, or disable floating so it
-# re-tiles if it wasn't. Either way, also re-apply the width/height: a
-# re-tiled window otherwise keeps whatever size i3's default split gave it
-# in its new container -- position isn't meaningful for a tiled window (the
-# layout decides that), but "resize set" still works to reclaim the size.
-# Takes the rect explicitly (rather than always reading $t_floating/$tx/...)
-# because on a normal close it's the app's own last-known rect that should
-# be restored, not the terminal's from before launch -- if the app was
-# resized while open, the terminal should come back at that size. Only the
-# signal-handler path (app still open, no close event to read a rect from)
-# falls back to the terminal's original capture.
+# The "scratchpad show" command always makes a window float. This is
+# normal i3 behavior. i3 does not undo this by itself.
+#
+# To fix this: if the window was floating before, set its old rectangle
+# again. If the window was tiled before, turn off floating so the window
+# tiles again.
 restore_term() {
-    local floating=$1 x=$2 y=$3 w=$4 h=$5
-    "$msg" "[id=\"$term\"] scratchpad show" >/dev/null
-    if [ "$floating" = 1 ]; then
-        "$msg" "[id=\"$term\"] move position $x $y, resize set $w $h" >/dev/null
-    else
-        "$msg" "[id=\"$term\"] floating disable" >/dev/null
-        # Fails harmlessly (and noisily) if the terminal ends up as the sole
-        # window in its container -- there's nothing to trade space with,
-        # but i3 already gives a solo window the full container by default.
-        "$msg" "[id=\"$term\"] resize set $w $h" >/dev/null 2>/dev/null
-    fi
+  local floating=$1 x=$2 y=$3 w=$4 h=$5
+  "$msg" "[id=\"$term\"] scratchpad show" >/dev/null
+  if [ "$floating" = 1 ]; then
+    "$msg" "[id=\"$term\"] move position $x $y, resize set $w $h" >/dev/null
+  else
+    "$msg" "[id=\"$term\"] floating disable" >/dev/null
+    "$msg" "[id=\"$term\"] resize set $w $h" >/dev/null 2>/dev/null
+  fi
 }
 
-# --kill: close the terminal (i3's "kill", the IPC equivalent of swallow's
-# WM_DELETE_WINDOW/XKillClient close_window()) instead of restoring it.
+# With --kill, close the terminal with i3's own "kill" command instead
+# of restoring it. This is the IPC form of swallow's close_window()
+# function, which uses WM_DELETE_WINDOW and XKillClient.
+#
+# With --remain, uses the app's last-known rectangle (w_floating/w_x/...,
+# set by the close-event handler below) instead of the terminal's own
+# original rectangle -- so a resize made while the app was open stays in
+# effect.
 finish_term() {
-    if [ "$KILL" = 1 ]; then
-        "$msg" "[id=\"$term\"] kill" >/dev/null
-    else
-        restore_term "$1" "$2" "$3" "$4" "$5"
-    fi
+  if [ "$KILL" = 1 ]; then
+    "$msg" "[id=\"$term\"] kill" >/dev/null
+  elif [ "$REMAIN" = 1 ]; then
+    restore_term "$w_floating" "$w_x" "$w_y" "$w_w" "$w_h"
+  else
+    restore_term "$t_floating" "$tx" "$ty" "$tw" "$th"
+  fi
 }
 
-restore_and_exit() {
-    [ "$have_app" = 1 ] && finish_term "$t_floating" "$tx" "$ty" "$tw" "$th"
-    exit 0
-}
-trap restore_and_exit INT TERM
+trap finish_term INT TERM
 
 "$@" &
 child_pid=$!
@@ -120,50 +139,57 @@ exit_time=0
 
 buf=""
 while true; do
-    # `read -t` can time out mid-line on a slow event; buffer across
-    # timeouts instead of discarding, or jq gets fed a truncated JSON line.
-    if IFS= read -r -t 0.5 -u 3 chunk; then
-        line="$buf$chunk"
-        buf=""
-        IFS=$'\t' read -r change win <<<"$(jq -r '[.change, (.container.window // "")] | @tsv' <<<"$line")"
-        if [ "$have_app" = 0 ] && [ "$change" = new ] && [ -n "$win" ] && [ "$win" != "$term" ]; then
-            app_win=$win
-            have_app=1
-            "$msg" "[id=\"$term\"] move scratchpad" >/dev/null
-            # Don't rely on i3's split-then-reflow to land the app on the
-            # terminal's exact former size once term leaves for the
-            # scratchpad -- in practice it doesn't always land there
-            # (default split ratios, size hints, timing), so force it
-            # explicitly, the same way restore_term forces it back.
-            if [ "$t_floating" = 1 ]; then
-                "$msg" "[id=\"$app_win\"] floating enable, move position $tx $ty, resize set $tw $th" >/dev/null
-            else
-                "$msg" "[id=\"$app_win\"] resize set $tw $th" >/dev/null 2>/dev/null
-            fi
-            # i3 remembers the rect set above, so un-fullscreening later returns to it.
-            [ "$FULLSCREEN" = 1 ] && "$msg" "[id=\"$app_win\"] fullscreen enable" >/dev/null
-        elif [ "$have_app" = 1 ] && [ "$change" = close ] && [ "$win" = "$app_win" ]; then
-            # The close event's own payload carries the app's rect/floating
-            # as of closing -- use that instead of the terminal's original
-            # capture, so a resize done while the app was open sticks.
-            read -r a_floating ax ay aw ah < <(
-                jq -r '.container | "\(if .floating=="user_on" or .floating=="auto_on" then 1 else 0 end) \(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"' <<<"$line"
-            )
-            finish_term "${a_floating:-$t_floating}" "${ax:-$tx}" "${ay:-$ty}" "${aw:-$tw}" "${ah:-$th}"
-            exit 0
+  # `read -t` can time out in the middle of a line during a slow event.
+  # Keep the partial data in `buf` instead of dropping it. If you drop
+  # it, jq later gets a broken JSON line.
+  if IFS= read -r -t 0.5 -u 3 chunk; then
+    line="$buf$chunk"
+    buf=""
+    IFS=$'\t' read -r change win <<<"$(jq -r '[.change, (.container.window // "")] | @tsv' <<<"$line")"
+    if [ "$have_app" = 0 ] && [ "$change" = new ] && [ -n "$win" ] && [ "$win" != "$term" ]; then
+      app_win=$win
+      have_app=1
+      "$msg" "[id=\"$term\"] move scratchpad" >/dev/null
+      if [ "$OCCUPY" = 1 ]; then
+        # Do not rely on i3's own split-and-reflow step to give the
+        # new window the terminal's old size after the terminal
+        # leaves for the scratchpad. This step does not always work,
+        # because of default split ratios, size hints, or timing. So
+        # set the size directly here, the same way restore_term sets
+        # it directly later.
+        if [ "$t_floating" = 1 ]; then
+          "$msg" "[id=\"$app_win\"] floating enable, move position $tx $ty, resize set $tw $th" >/dev/null
+        else
+          "$msg" "[id=\"$app_win\"] resize set $tw $th" >/dev/null 2>/dev/null
         fi
-    else
-        buf+="$chunk"
+      fi
+      # i3 remembers the rectangle set above. Turning off fullscreen later returns to it.
+      [ "$FULLSCREEN" = 1 ] && "$msg" "[id=\"$app_win\"] fullscreen enable" >/dev/null
+    elif [ "$have_app" = 1 ] && [ "$change" = close ] && [ "$win" = "$app_win" ]; then
+      # The close event itself carries the app's rectangle and
+      # floating state at the time of closing. With --remain,
+      # finish_term uses this instead of the terminal's original
+      # data, so a resize made while the app was open stays in effect.
+      if [ "$REMAIN" = 1 ]; then
+        read -r w_floating w_x w_y w_w w_h < <(
+          jq -r '.container | "\(if .floating=="user_on" or .floating=="auto_on" then 1 else 0 end) \(.rect.x) \(.rect.y) \(.rect.width) \(.rect.height)"' <<<"$line"
+        )
+      fi
+      finish_term
+      exit 0
     fi
+  else
+    buf+="$chunk"
+  fi
 
-    if [ "$child_running" = 1 ] && ! kill -0 "$child_pid" 2>/dev/null; then
-        child_running=0
-        exit_time=$(date +%s)
-    fi
-    if [ "$have_app" = 0 ] && [ "$child_running" = 0 ] &&
-        [ $(($(date +%s) - exit_time)) -ge "$GRACE" ]; then
-        # Nothing that looks like its window ever showed up (typo,
-        # CLI-only command, or the app gave up); stop waiting.
-        exit 0
-    fi
+  if [ "$child_running" = 1 ] && ! kill -0 "$child_pid" 2>/dev/null; then
+    child_running=0
+    exit_time=$(date +%s)
+  fi
+  if [ "$have_app" = 0 ] && [ "$child_running" = 0 ] &&
+    [ $(($(date +%s) - exit_time)) -ge "$TIMEOUT" ]; then
+    # No matching window showed up. Possible causes: a typo, a
+    # command-line-only program, or a program that gave up. Stop waiting.
+    exit 0
+  fi
 done
