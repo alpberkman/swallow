@@ -5,9 +5,11 @@
 #      and exits immediately -- breaks naive PID-ancestry matching)
 #   3. a command that never opens a window (should give up, not hang, and
 #      never touch the terminal window)
-#   4. (i3-msg/jq only) the app's tiled window immediately takes over the
+#   4. --timeout 0 against a command that never opens a window (should
+#      never give up)
+#   5. (i3-msg/jq only) the app's tiled window immediately takes over the
 #      terminal's exact former size
-#   5. (i3-msg/jq only) a resize while the app is open survives into the
+#   6. (i3-msg/jq only) a resize while the app is open survives into the
 #      restored terminal's size
 #
 # By default this runs against whatever i3 session $DISPLAY already points
@@ -232,6 +234,34 @@ test_no_window() {
 # swallow-i3.sh explicitly forces it instead (see the "new" event handler
 # above), since it removes the terminal from the tree entirely via the
 # scratchpad.
+test_timeout_zero() {
+    local bin=$1 tag="T_TIMEOUT0_$$"
+    echo "--- $bin: --timeout 0 waits forever for a window ---"
+    read -r tpid twid < <(spawn_term "$tag")
+    if [ -z "$twid" ]; then bad "could not find fake terminal window"; kill "$tpid" 2>/dev/null; return; fi
+
+    WINDOWID="$((twid))" "$bin" --timeout 0 true &
+    local spid=$!
+    sleep 4
+
+    if kill -0 "$spid" 2>/dev/null; then
+        ok "still waiting after 4s with no window and no timeout"
+    else
+        bad "gave up despite --timeout 0"
+    fi
+
+    kill "$spid" 2>/dev/null
+    wait "$spid" 2>/dev/null
+
+    local after
+    after=$(map_state "$twid")
+    [ "$after" = "IsViewable" ] && ok "terminal untouched ($after)" \
+        || bad "terminal state changed: after=$after"
+
+    kill "$tpid" 2>/dev/null
+    pkill -x xterm 2>/dev/null
+}
+
 test_swallow_matches_size() {
     local bin=$1 tag="T_SWALLOWSZ_$$" ws="swallowtest92"
     echo "--- $bin: app should immediately take over terminal's exact tiled size ---"
@@ -298,12 +328,13 @@ test_swallow_matches_size() {
 # the same container, or i3 has nothing to trade space with when resizing
 # (and errors out) -- run in a scratch workspace so a real sibling is
 # guaranteed regardless of whatever the live session's layout looks like.
-# Expected to FAIL for plain `swallow` as invoked here (no flags): it only
-# captures the terminal's original geometry once and unmaps/maps around it
-# -- matching the app's live resize is what its own --remain flag is for,
-# and this harness doesn't pass it. Not a regression, just out of scope:
-# the scratchpad-based rect-tracking this test checks is specific to
-# swallow-i3.sh.
+# Passes --remain so this actually exercises the rect-tracking, not just the
+# terminal's original geometry. Expected to FAIL for swallow-generic: i3
+# tiled windows aren't reparented, so its ConfigureNotify-based --remain
+# tracking (built and tested against Openbox) doesn't see the same geometry
+# changes swallow-i3.sh gets straight from i3's own IPC tree. Not a
+# regression -- swallow-auto.sh already routes to swallow-i3.sh whenever i3
+# is actually running, so swallow-generic is never used this way in practice.
 test_resize_survives() {
     local bin=$1 tag="T_RESIZE_$$" ws="swallowtest91"
     echo "--- $bin: app resized while swallowed, restored terminal should match ---"
@@ -328,7 +359,7 @@ test_resize_survives() {
         return
     fi
 
-    WINDOWID="$((twid))" "$bin" xterm -T "A_RESIZE_$$" -e sleep 30 &
+    WINDOWID="$((twid))" "$bin" --remain xterm -T "A_RESIZE_$$" -e sleep 30 &
     local spid=$!
     sleep 1.2
 
@@ -376,6 +407,7 @@ for bin in "$@"; do
     test_direct "$bin"
     test_detached "$bin"
     test_no_window "$bin"
+    test_timeout_zero "$bin"
     test_swallow_matches_size "$bin"
     test_resize_survives "$bin"
     echo

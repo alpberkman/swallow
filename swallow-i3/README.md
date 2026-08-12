@@ -1,37 +1,37 @@
 # swallow-i3.sh
 
-An i3/sway-specific alternative to `swallow`: same idea (hide the launching
-terminal while a GUI app's window is open, restore it on close), but built
-entirely on i3 IPC (`i3-msg`/`swaymsg` + `jq`) instead of raw X11/EWMH. It
-trades `swallow`'s window-manager independence for i3/sway-specific
-behavior that a generic X11 tool can't do on its own: putting the terminal
-in the scratchpad instead of just unmapping it, and having the launched
-app immediately take over the terminal's exact tiled slot (not just its
-on-screen rect) via i3's own tree/container model.
+This is an alternative to `swallow` for i3 and sway. It has the same
+purpose: hide the terminal while a GUI app's window is open, and restore
+the terminal when that window closes. It uses i3 IPC (`i3-msg`/`swaymsg`
+plus `jq`) instead of raw X11/EWMH. This gives it two things a plain X11
+tool cannot do on its own: it puts the terminal in the scratchpad instead
+of just unmapping it, and it can put the launched app directly into the
+terminal's tiled slot through i3's own tree model.
 
-Because it's plain bash, it needs no build step -- there's no C compiler or
-libX11 involved for this version.
+This script is plain bash. It needs no build step and no C compiler.
 
-If you move between i3/sway and other window managers, `../swallow-auto.sh`
-picks between this script and `swallow` automatically based on what's
-actually running, so you don't need separate setups per WM -- see the main
-`../README.md`'s "Shell integration" section.
+If you switch between i3/sway and other window managers, use
+`../swallow-auto.sh` instead. It picks between this script and `swallow`
+based on what is running. See the "Shell integration" section in the main
+`../README.md`.
 
 ## Requirements
 
 - `bash`
 - `jq`
-- `i3-msg` (i3) or `swaymsg` (sway) -- whichever matches your running
-  compositor is picked automatically, see below
+- `i3-msg` (i3) or `swaymsg` (sway). The script picks the right one
+  automatically. See "How it works" below.
 - A running i3 or sway session
 
 ## Install
 
-There's nothing to build. The simplest route is the repo's top-level
-`make install` (see the main `../README.md`), which installs this as
-`swallow-i3` alongside `swallow` and `swallow-auto` and wires up shell
-integration for you. To install just this script standalone instead, make
-it executable and put it on your `PATH` however you like, e.g.:
+There is nothing to build. The simplest way is the repo's top-level `make
+install` (see the main `../README.md`). It installs this script as
+`swallow-i3`, alongside `swallow` and `swallow-auto`, and sets up shell
+integration for you.
+
+To install just this script, make it executable and put it on your
+`PATH`:
 
 ```sh
 chmod +x swallow-i3.sh
@@ -41,86 +41,92 @@ cp swallow-i3.sh ~/.local/bin/swallow-i3
 ## Usage
 
 ```sh
-swallow-i3.sh [--kill] [--full-screen] <command> [args...]
+swallow-i3.sh [options] <command> [args...]
 ```
 
-Run whatever you'd normally run from your terminal, prefixed with
-`swallow-i3.sh`. For example:
+Run whatever you would normally run from your terminal, with
+`swallow-i3.sh` in front. For example:
 
 ```sh
-swallow-i3.sh zathura document.pdf
+swallow-i3.sh --occupy --remain zathura document.pdf
 swallow-i3.sh --full-screen mpv video.mp4
 swallow-i3.sh --kill pcmanfm
 ```
 
-- `--kill`: when the app's window closes, close the terminal (via i3's own
-  `kill` command, sent straight to it) instead of bringing it back from the
-  scratchpad.
-- `--full-screen`: fullscreen the app's window as soon as it appears, on
-  top of the usual scratchpad-swap placement -- i3 remembers the
-  non-fullscreen rect on its own, so un-fullscreening later returns to that
-  spot.
+### Options
 
-Beyond those two, there are no other placement/timeout flags -- everything
-else is driven by i3/sway's own tiling and scratchpad behavior instead. The
-one other tunable is `GRACE` (default 10s), a constant at the top of the
-script: how long to keep waiting for a window after the launched command's
-own process has already exited, before giving up (see "How it works"
-below).
+| Flag | Long form | Description |
+|---|---|---|
+| `-o` | `--occupy` | Put the new window in the terminal's old spot |
+| `-r` | `--remain` | Restore the terminal to the app window's last spot, not its own original spot |
+| `-f` | `--full-screen` | Full-screen the app's window as soon as it appears |
+| `-k` | `--kill` | Close the terminal when the app's window closes, instead of restoring it |
+| `-t <n>` | `--timeout <n>` | Give up if no window appears within n seconds (default 3; 0 waits forever) |
+| `-h` | `--help` | Show usage and exit |
+
+Notes:
+
+- `--occupy` sets the new window to a floating position, or a tiled
+  size, to match the terminal. i3 does not do this step by itself.
+- `--full-screen` full-screens the app's window on top of whatever
+  `--occupy` set. i3 remembers the non-full-screen rectangle, so
+  un-full-screening later returns to that spot.
+- `--kill` sends the terminal i3's own `kill` command instead of
+  bringing it back from the scratchpad.
+- With no `--remain`, the terminal returns to its own original spot. With
+  `--remain`, it goes to the app window's last known spot instead.
+- `--timeout` bounds how long the script waits for a window after the
+  launched command's own process exits. If that process never exits (for
+  example, it forks and backgrounds itself), the wait has no limit from
+  this option; the script still watches for the window event.
 
 ## How it works
 
-- The terminal is whichever window is focused when `swallow-i3.sh` starts
-  -- read from `$WINDOWID` if the terminal emulator sets it (most do),
-  otherwise looked up via `get_tree`.
-- Whether i3 or sway is running is detected from `$SWAYSOCK` (set by sway,
-  never by i3); the script then goes through `i3-msg` or `swaymsg`
-  uniformly, since both speak the same IPC protocol and command language.
-- Before launching the command, the terminal's floating state and rect are
-  captured, and the script subscribes to i3's `window` event stream --
-  *before* forking the child, so the child's own "new window" event can't
-  be missed in the gap.
-- Once a new window (that isn't the terminal itself) is reported, the
-  terminal is sent to the scratchpad (`move scratchpad`), and the new
-  window is forced into the terminal's old spot: floating at the same
-  rect if the terminal was floating, or resized to the same width/height
-  if it was tiled (i3's own reflow doesn't reliably land a newly-tiled
-  window at the exact freed-up size on its own).
-- When that window closes, the terminal is brought back (`scratchpad
-  show`, which also refocuses it) and either moved back to the app's
-  last-known rect (if it was floating) or un-floated and resized to match
-  (if it was tiled) -- using the closing app's *own* rect as of the close
-  event, not the terminal's original one, so a resize done while the app
-  was open sticks instead of being discarded.
-- If no qualifying window ever shows up (typo'd command, a CLI-only
-  program, a crash on startup), the script gives up `GRACE` seconds after
-  the launched process itself exits, rather than hanging forever. If the
-  process never exits either (e.g. it backgrounds/daemonizes), there's no
-  overall cap -- the loop just keeps waiting for a window.
-- `INT`/`TERM` (e.g. Ctrl-C) restore the terminal at its original
-  pre-launch spot before exiting (or kill it instead, with `--kill`),
-  since there's no app-close event to read a live rect from in that path.
-- `--kill` sends i3's own `kill` command to the terminal's `id`, the IPC
-  equivalent of `swallow`'s `WM_DELETE_WINDOW`-then-`XKillClient`
-  `close_window()` -- no need to hand-roll that here.
+- The terminal is whichever window is focused when `swallow-i3.sh`
+  starts. The script reads `$WINDOWID` if the terminal emulator sets it.
+  Most terminal emulators set it. Otherwise the script looks up the
+  focused window with `get_tree`.
+- The script checks `$SWAYSOCK` to detect sway (i3 never sets this
+  variable). It then uses `i3-msg` or `swaymsg`, since both use the same
+  IPC protocol and commands.
+- Before it launches the command, the script records the terminal's
+  floating state and rectangle, and subscribes to i3's `window` event
+  stream. It does this before it forks the child process, so it cannot
+  miss the child's own "new window" event.
+- When a new window appears that is not the terminal, the script sends
+  the terminal to the scratchpad (`move scratchpad`). With `--occupy`, it
+  also puts the new window in the terminal's old spot: floating at the
+  same rectangle if the terminal was floating, or resized to the same
+  width and height if it was tiled. i3's own reflow does not reliably
+  give a newly tiled window the exact freed-up size by itself.
+- When that window closes, the script brings the terminal back
+  (`scratchpad show`, which also gives it focus). With `--remain`, it
+  uses the app window's own rectangle at the time of the close event, not
+  the terminal's original one, so a resize made while the app was open
+  stays in effect. Without `--remain`, it uses the terminal's own
+  original rectangle instead.
+- If no matching window ever appears (a typo in the command, a
+  command-line-only program, a crash on startup), the script gives up
+  `--timeout` seconds after launch, unless `--timeout 0` was given, in
+  which case it waits forever.
+- On Ctrl-C or a normal `kill` (`INT`/`TERM`), the script runs the same
+  cleanup: it restores the terminal, or closes it with `--kill`.
+- `--kill` sends i3's own `kill` command to the terminal's window ID.
+  This is the IPC equivalent of `swallow`'s `WM_DELETE_WINDOW`-then-
+  `XKillClient` `close_window()` function.
 
 ## Differences from `swallow`
 
-- i3/sway only, not portable to other window managers.
-- No `-o/--occupy` or `-x/-y/-w/-l` flags -- placement is entirely
-  i3/sway's tiling model plus the scratchpad swap described above, not
-  manually specified geometry. `-f/--full-screen` and `-k/--kill` *are*
-  supported, as `--full-screen`/`--kill` (see Usage above).
-- No `-t/--timeout` flag; `GRACE` plays a related but narrower role (see
-  above) and is a constant in the script, not a CLI option.
-- Always behaves like `swallow --remain`: the terminal comes back at the
-  app's last position/size, not its own original spot (unless `--kill` is
-  given, in which case it's closed instead). There's no flag to opt out of
-  the `--remain`-like behavior specifically.
-- Uses the scratchpad rather than a raw unmap, and actively resizes the
-  launched app into the terminal's tiled slot -- the counterpart to
-  `swallow`'s pre-map placement/flash-avoidance work, but achieved through
-  i3/sway's own container model instead of X11 geometry hints.
+- This script only works with i3 and sway. `swallow` works with any
+  reasonably compliant X11 window manager.
+- There are no `-x/-y/-w/-l` manual-geometry flags. Placement always
+  comes from i3/sway's own tiling model, plus the scratchpad move and
+  `--occupy` described above.
+- `--occupy`, `--remain`, `--full-screen`, `--kill`, and `--timeout` all
+  exist here too, with the same names and meaning as in `swallow`.
+- This script uses the scratchpad, not a raw X11 unmap, and it actively
+  resizes the launched app into the terminal's tiled slot. `swallow` does
+  the equivalent job with pre-map X11 geometry hints instead.
 
 ## Testing
 
@@ -128,21 +134,22 @@ below).
 ./test-i3.sh --xephyr ./swallow-i3.sh
 ```
 
-Runs a real integration suite in a disposable nested Xephyr + i3 session,
-covering: a direct app launch, a detached/single-instance-style launch, a
-command that never opens a window, the app immediately taking over the
-terminal's tiled size, and a resize while the app is open surviving into
-the restored terminal. Requires `Xephyr`, `i3`, `i3-msg`, `jq`.
+This runs a real integration suite in a disposable, nested Xephyr and i3
+session. It covers: a direct app launch, a detached/single-instance-style
+launch, a command that never opens a window, `--timeout 0` waiting
+forever, the app immediately taking over the terminal's tiled size, and a
+resize surviving into the restored terminal with `--remain`. It needs
+`Xephyr`, `i3`, `i3-msg`, and `jq`.
 
-Drop `--xephyr` to instead run against whichever i3 session `$DISPLAY`
-already points at (a real, already-running one) -- useful for testing
-under sway, since sway has no Xephyr-nestable equivalent in this suite.
+Drop `--xephyr` to run against whichever i3 session `$DISPLAY` already
+points at, a real, already-running one. This is useful for testing under
+sway, since sway has no Xephyr-nestable equivalent in this suite.
 
-`test-i3.sh` is written generically against any `swallow-*` binary or
-script, not just `swallow-i3.sh` -- e.g. `./test-i3.sh --xephyr
-../bin/swallow` runs it against the C version instead. See the script's
-own comments for which scenarios are expected to pass or fail for plain
-`swallow` when run that way.
+`test-i3.sh` is written to work against any `swallow-*` binary or script,
+not just `swallow-i3.sh`. For example, `./test-i3.sh --xephyr
+../bin/swallow-generic` runs it against the C version instead. See the
+script's own comments for which scenarios are expected to pass or fail
+for `swallow-generic` when run that way.
 
 ## Note
 
