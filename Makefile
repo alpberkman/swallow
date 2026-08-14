@@ -1,14 +1,6 @@
-CC       ?= cc
-CFLAGS   ?= -O2 -Wall -Wextra -std=c11
-PKG_CONFIG ?= pkg-config
-
-CFLAGS   += $(shell $(PKG_CONFIG) --cflags x11)
-LIBS     := $(shell $(PKG_CONFIG) --libs x11)
-
 PREFIX   ?= $(HOME)/.local
 BINDIR   := $(PREFIX)/bin
 
-SRC     := src/swallow-generic.c
 BINNAME := swallow-generic
 OUTDIR  := bin
 BIN     := $(OUTDIR)/$(BINNAME)
@@ -28,37 +20,25 @@ SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
 all: $(BIN)
 
-$(BIN): $(SRC) | $(OUTDIR)
-	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
-
-$(OUTDIR):
-	mkdir -p $(OUTDIR)
+$(BIN):
+	$(MAKE) -C swallow-generic
 
 clean:
-	rm -f $(BIN)
+	$(MAKE) -C swallow-generic clean
 	$(MAKE) -C tests clean
 
-# Split from `install` so packaging (debian/rules) can install just the
-# binary/scripts into a DESTDIR without also touching a real ~/.bashrc --
-# there's no single right "the user" to wire shell integration for from a
-# postinst script, unlike here where $(BASHRC) unambiguously means yours.
+# Separate from `install` so debian/rules can install into a DESTDIR
+# without touching a real ~/.bashrc.
 install-files: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
+	$(MAKE) -C swallow-generic install
+	$(MAKE) -C swallow-wm install
 	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
 	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
 
-# The .bashrc line is a `source`, not a raw append of shell-integration.sh's
-# own code -- sourcing keeps its BASH_SOURCE-relative lookup of
-# swallow-auto.sh resolving to this repo, instead of to wherever .bashrc
-# happens to live. grep -qxF guards against appending the same line again
-# on repeat installs.
-#
-# SWALLOW_APPS=() and a default SWALLOW_FLAGS=... are added above it (each
-# only if no assignment to that name exists at all yet -- a plain -qxF
-# check would re-add them every time and stomp whatever was since edited)
-# as somewhere for you to list the apps shell-integration.sh should wrap
-# and the flags to launch them with; it's your .bashrc from here, not this
-# repo's.
+# Adds SWALLOW_APPS, SWALLOW_FLAGS, and a source line to ~/.bashrc, each
+# only if missing, so re-running install never overwrites edits you've
+# made to them. .bashrc sources this repo's copy of
+# shell-integration.sh rather than embedding its code.
 install: install-files
 	grep -qE '^SWALLOW_APPS=' $(BASHRC) 2>/dev/null || \
 		echo '$(SWALLOW_APPS_LINE)' >> $(BASHRC)
@@ -68,14 +48,16 @@ install: install-files
 		echo '$(SHELL_INTEGRATION_LINE)' >> $(BASHRC)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME) $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME)
+	$(MAKE) -C swallow-generic uninstall
+	$(MAKE) -C swallow-wm uninstall
+	rm -f $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME)
 
 test: $(BIN)
 	$(MAKE) -C tests
-	tests/run_tests.sh
+	tests/test-generic.sh
+	tests/test-i3.sh --xephyr swallow-i3/swallow-i3.sh
 
-# dpkg-buildpackage drops the .deb (and .buildinfo/.changes) one directory
-# above this one -- that's its own convention, not something to fight.
-# -us -uc: don't GPG-sign, irrelevant for a local/unpublished build.
+# Output lands one folder above this one; that's normal dpkg-buildpackage
+# behavior. -us -uc skips GPG signing, unneeded for a local build.
 deb:
 	dpkg-buildpackage -us -uc -b

@@ -19,8 +19,8 @@
 # swallow-i3.sh, since plain swallow (src/swallow.c) doesn't need i3 at all.
 #
 # Usage: ./test-i3.sh [--xephyr] <binary> [binary2 ...]
-# Example: ./test-i3.sh ../bin/swallow
-# Example: ./test-i3.sh --xephyr ./swallow-i3.sh
+# Example: ./test-i3.sh ../bin/swallow-generic
+# Example: ./test-i3.sh --xephyr ../swallow-i3/swallow-i3.sh
 
 set -u
 cd "$(dirname "$0")"

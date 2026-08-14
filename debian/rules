@@ -10,7 +10,7 @@
 override_dh_auto_install:
 	$(MAKE) DESTDIR=$(CURDIR)/debian/swallow PREFIX=/usr install-files
 
-# tests/run_tests.sh needs a real X session (Xephyr + Openbox + xdotool)
-# and isn't a Build-Depends -- not appropriate to run inside a package
-# build.
+# tests/test-generic.sh needs a real X session (Xephyr + Openbox +
+# xdotool) and isn't a Build-Depends -- not appropriate to run inside a
+# package build.
 override_dh_auto_test:

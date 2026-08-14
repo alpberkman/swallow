@@ -5,22 +5,6 @@
 # not understand them; see strip_swallow_flags below.
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Prefer the installed names on $PATH; fall back to repo-relative paths
-# for an unbuilt-into-PATH checkout. Checks swallow-generic, not
-# swallow: this script is itself installed as `swallow`.
-if command -v swallow-i3 >/dev/null 2>&1; then
-    SWALLOW_I3=swallow-i3
-else
-    SWALLOW_I3="$SCRIPT_DIR/swallow-i3/swallow-i3.sh"
-fi
-if command -v swallow-generic >/dev/null 2>&1; then
-    SWALLOW_BIN=swallow-generic
-else
-    SWALLOW_BIN="$SCRIPT_DIR/bin/swallow-generic"
-fi
-
 # Kept in sync with `bin/swallow-generic --help`. is_value_flag marks
 # flags that take a following arg (-x 10, not just -x).
 is_swallow_flag() {
@@ -36,6 +20,23 @@ is_value_flag() {
         *) return 1 ;;
     esac
 }
+
+# swallow-wm.sh sets this inside its nested session. mwm already fills
+# the screen with one window at a time, so there is no terminal to
+# hide or restore. Strip swallow's own flags, since callers such as
+# shell-integration.sh still pass them, then run the bare command.
+if [ -n "${SWALLOW_WM:-}" ]; then
+    while [ "$#" -gt 0 ] && is_swallow_flag "$1"; do
+        if is_value_flag "$1"; then
+            shift 2
+        else
+            shift
+        fi
+    done
+    exec "$@"
+    echo "Hello from swallow wm!"
+    exit 127
+fi
 
 # swallow-i3.sh's own subset of is_swallow_flag; passed through, not
 # stripped, when dispatching to it.
@@ -65,10 +66,14 @@ strip_swallow_flags() {
 # i3 is actually running, not just installed. $I3SOCK is unset first (in
 # a subshell): if set, i3-msg uses it and ignores $DISPLAY, so a nested
 # test session could wrongly see an outer, real i3 as owning it.
-if [ -n "${SWAYSOCK:-}" ] || { command -v i3-msg >/dev/null 2>&1 && ( unset I3SOCK; i3-msg -t get_version >/dev/null 2>&1 ); }; then
+is_i3_running() {
+    command -v i3-msg >/dev/null 2>&1 && ( unset I3SOCK; i3-msg -t get_version >/dev/null 2>&1 )
+}
+
+if [ -n "${SWAYSOCK:-}" ] || is_i3_running; then
     args=()
     while IFS= read -r -d '' a; do args+=("$a"); done < <(strip_swallow_flags "$@")
-    exec "$SWALLOW_I3" "${args[@]}"
+    exec swallow-i3 "${args[@]}"
 else
-    exec "$SWALLOW_BIN" "$@"
+    exec swallow-generic "$@"
 fi
