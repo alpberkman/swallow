@@ -59,9 +59,6 @@ static void XCloseWindow(Display *dpy, Window window) {
  * reparent it into its own decoration frame first, and this whole
  * program ends up embedding nothing. */
 static Window wait_for_target_window(Display *dpy, Window term_win) {
-    Window candidates[64];
-    unsigned int n = 0;
-
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
@@ -70,20 +67,12 @@ static Window wait_for_target_window(Display *dpy, Window term_win) {
             XWindowAttributes wa;
             if (w == term_win || !XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect)
                 continue;
-            if (n < LENOF(candidates)) {
-                XSetWindowAttributes swa;
-                swa.override_redirect = True;
-                XChangeWindowAttributes(dpy, w, CWOverrideRedirect, &swa);
-                XSelectInput(dpy, w, StructureNotifyMask);
-                candidates[n++] = w;
-            } else {
-                ERR("Window candidate buffer full");
-            }
+            XSetWindowAttributes swa;
+            swa.override_redirect = True;
+            XChangeWindowAttributes(dpy, w, CWOverrideRedirect, &swa);
+            XSelectInput(dpy, w, StructureNotifyMask);
         } else if (ev.type == MapNotify && ev.xmap.event == ev.xmap.window) {
-            for (unsigned int i = 0; i < n; i++)
-                if (candidates[i] == ev.xmap.window) return ev.xmap.window;
-            if(n == LENOF(candidates)) ERR("Window candidate buffer full but couldnt find a candidate");
-            
+            return ev.xmap.window;
         }
     }
 }
