@@ -3,6 +3,12 @@
 # openbox session so it never touches the real desktop. Same pattern
 # as test-generic.sh in this same directory.
 #
+# Drives an interactive xterm by typing into it via xdotool (the same
+# way a user actually runs this), rather than pre-baking the command
+# into xterm -e: xterm's default interactive shell can rewrite the
+# window title via its own prompt escape sequences, racing any
+# title-based window lookup, so windows are found by PID instead.
+#
 # Requires: Xephyr, openbox, xdotool, xwininfo. Skips (exit 0) if
 # missing.
 
@@ -25,7 +31,7 @@ cleanup() {
     [ -n "$OPENBOX_PID" ] && kill "$OPENBOX_PID" >/dev/null 2>&1
     [ -n "$XEPHYR_PID" ] && kill "$XEPHYR_PID" >/dev/null 2>&1
     wait >/dev/null 2>&1
-    rm -f /tmp/swallow-embed-test-marker /tmp/swallow-embed-test-exit
+    rm -f /tmp/swallow-embed-test-marker
 }
 trap cleanup EXIT INT TERM
 
@@ -54,7 +60,9 @@ wait_for() { # wait_for <timeout_seconds> <command...>
     return 0
 }
 
-find_window_by_name() { DISPLAY=":$XDISP" xdotool search --name "$1" 2>/dev/null | head -n1; }
+window_for_pid() { DISPLAY=":$XDISP" xdotool search --onlyvisible --pid "$1" 2>/dev/null | head -n1; }
+
+child_count() { DISPLAY=":$XDISP" xwininfo -id "$1" -children 2>/dev/null | grep -c '^ *0x'; }
 
 # --- start a private X server + WM, exactly like tests/test-generic.sh --
 for cand in $(seq 50 199); do
@@ -82,42 +90,52 @@ wait_for 10 bash -c \
     log "swallow-embed test: openbox did not become ready"; exit 1
 }
 
-# --- scenario 1: reparenting, sizing, and real keyboard input ----------
-# The "terminal" is an outer xterm. It runs swallow-embed itself as its
-# shell command, targeting a second, inner xterm. By the time
-# swallow-embed starts, the outer xterm is already mapped and (openbox's
-# default) focused, so _NET_ACTIVE_WINDOW already points at it -- the
-# same way a real terminal would be active when a user runs this by
-# hand.
+# --- scenario: reparent, resize, real keyboard input, close -------------
+# A plain interactive xterm stands in for "the terminal you run this
+# from". The swallow-embed command is TYPED into it via xdotool, the
+# same way a user actually invokes this, targeting a second, inner
+# xterm. By the time it runs, the outer xterm is already mapped and
+# focused, so _NET_ACTIVE_WINDOW already points at it.
 run_embed_scenario() {
-    log "--- scenario: reparent + resize + input ---"
+    log "--- scenario: reparent + resize + input + close ---"
     rm -f /tmp/swallow-embed-test-marker
 
-    DISPLAY=":$XDISP" xterm -T outer-terminal -e bash -c \
-        "'$BIN' xterm -T inner-app -e bash -c 'cat > /tmp/swallow-embed-test-marker'" &
+    DISPLAY=":$XDISP" xterm >/tmp/swallow-embed-test-outer.log 2>&1 &
     local outer_pid=$!
 
-    local outer_win
-    outer_win=$(find_window_by_name "outer-terminal")
-    wait_for 10 bash -c "DISPLAY=:$XDISP xdotool search --name outer-terminal >/dev/null 2>&1" || {
-        fail "outer terminal window never appeared"; kill "$outer_pid" 2>/dev/null; return
+    local outer_win=""
+    wait_for 10 bash -c "[ -n \"\$(DISPLAY=:$XDISP xdotool search --onlyvisible --pid $outer_pid 2>/dev/null)\" ]" || {
+        fail "outer terminal window never appeared"
+        kill "$outer_pid" 2>/dev/null
+        return
     }
-    outer_win=$(find_window_by_name "outer-terminal")
+    outer_win=$(window_for_pid "$outer_pid")
+    pass "outer terminal window appeared (id $outer_win)"
 
-    # The inner app's window should end up as a REPARENTED CHILD of the
-    # outer terminal's own window -- not a new top-level window of its
-    # own. This is the whole point of this design (see swallow-embed.c's
-    # top comment): no new window ever appears.
-    local inner_win=""
+    # xterm creates its own internal VT100 widget child window shortly
+    # after mapping, unrelated to swallow-embed; settle past that
+    # before taking the "before" baseline, or it gets miscounted as
+    # something swallow-embed added.
+    local before_children prev=-1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        before_children=$(child_count "$outer_win")
+        [ "$before_children" = "$prev" ] && break
+        prev=$before_children
+        sleep 0.3
+    done
+
+    DISPLAY=":$XDISP" xdotool windowactivate --sync "$outer_win" >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool type -- \
+        "$BIN xterm -e bash -c 'cat > /tmp/swallow-embed-test-marker'"
+    DISPLAY=":$XDISP" xdotool key Return
+
     local ticks=25
     while [ "$ticks" -gt 0 ]; do
-        inner_win=$(DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null \
-            | grep -oP '0x[0-9a-f]+(?= "inner-app")')
-        [ -n "$inner_win" ] && break
+        [ "$(child_count "$outer_win")" -gt "$before_children" ] && break
         ticks=$((ticks - 1))
         sleep 0.2
     done
-    if [ -n "$inner_win" ]; then
+    if [ "$(child_count "$outer_win")" -gt "$before_children" ]; then
         pass "inner app window was reparented as a child of the outer terminal window"
     else
         fail "inner app window never showed up as a child of the outer terminal window"
@@ -125,24 +143,30 @@ run_embed_scenario() {
         return
     fi
 
-    # Confirm no NEW top-level window was created on root for the app --
-    # this is the specific thing the earlier "creates a fresh container"
-    # version got wrong.
-    local toplevel_count
-    toplevel_count=$(DISPLAY=":$XDISP" xdotool search --name "inner-app" 2>/dev/null | wc -l)
-    if [ "$toplevel_count" -eq 0 ]; then
-        pass "inner app is not independently reachable as a top-level window (truly embedded, not just another window)"
+    # Confirm root has no OTHER new direct child besides the outer
+    # terminal -- that's the specific thing an earlier version of this
+    # prototype (which created a fresh container instead of reusing
+    # the caller's own window) got wrong. `xdotool search` recurses
+    # the whole tree, so it would find the reparented child too, at
+    # any depth; only root's direct children matter here.
+    local other_toplevel
+    other_toplevel=$(DISPLAY=":$XDISP" xwininfo -root -children 2>/dev/null \
+        | grep -oP '^\s+\K0x[0-9a-f]+(?=\s+"[^"]*":\s+\("xterm")' | grep -vx "$outer_win" | wc -l)
+    if [ "$other_toplevel" -eq 0 ]; then
+        pass "inner app is not independently reachable as a top-level window (truly embedded)"
     else
-        fail "inner app is still reachable as its own top-level window ($toplevel_count matches) -- not really embedded"
+        fail "inner app is still reachable as its own top-level window ($other_toplevel matches)"
     fi
 
-    # Size: should match the outer terminal's own client area.
-    local outer_geom inner_geom
+    # Size: embedded app should fill the outer terminal exactly.
+    local outer_geom inner_win inner_geom
+    inner_win=$(DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null \
+        | grep -oP '^\s+\K0x[0-9a-f]+(?=\s+"[^"]*":\s+\("xterm")' | head -n1)
     outer_geom=$(DISPLAY=":$XDISP" xdotool getwindowgeometry --shell "$outer_win" 2>/dev/null \
         | sed -n 's/^WIDTH=\(.*\)/\1/p;s/^HEIGHT=\(.*\)/\1/p' | paste -sd, -)
     inner_geom=$(DISPLAY=":$XDISP" xdotool getwindowgeometry --shell "$inner_win" 2>/dev/null \
         | sed -n 's/^WIDTH=\(.*\)/\1/p;s/^HEIGHT=\(.*\)/\1/p' | paste -sd, -)
-    if [ "$outer_geom" = "$inner_geom" ]; then
+    if [ -n "$inner_win" ] && [ "$outer_geom" = "$inner_geom" ]; then
         pass "embedded app was resized to fill the terminal exactly ($inner_geom)"
     else
         fail "embedded app size ($inner_geom) does not match terminal size ($outer_geom)"
@@ -152,6 +176,7 @@ run_embed_scenario() {
     # synthetic XSendEvent (xterm legitimately ignores those).
     DISPLAY=":$XDISP" xdotool windowactivate --sync "$outer_win" >/dev/null 2>&1
     DISPLAY=":$XDISP" xdotool type "hello-from-test"
+    sleep 0.3
     DISPLAY=":$XDISP" xdotool key ctrl+d
     wait_for 5 test -s /tmp/swallow-embed-test-marker
     if [ "$(cat /tmp/swallow-embed-test-marker 2>/dev/null)" = "hello-from-test" ]; then
@@ -161,11 +186,10 @@ run_embed_scenario() {
     fi
 
     # ctrl+d already made the inner xterm's cat exit, which makes the
-    # inner xterm itself exit, which should make swallow-embed exit too,
-    # leaving the outer terminal's own shell running and its window
-    # intact.
-    wait_for 5 bash -c "! kill -0 $outer_pid 2>/dev/null || ! DISPLAY=:$XDISP xwininfo -id $outer_win -children 2>/dev/null | grep -q inner-app"
-    if ! DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null | grep -q "inner-app"; then
+    # inner xterm exit, which makes swallow-embed exit, leaving the
+    # outer terminal's own shell running and its window intact.
+    wait_for 5 bash -c "[ \"\$(DISPLAY=:$XDISP xwininfo -id $outer_win -children 2>/dev/null | grep -c '^ *0x')\" -le $before_children ]"
+    if [ "$(child_count "$outer_win")" -le "$before_children" ]; then
         pass "embedded app cleanly gone after it exited on its own"
     else
         fail "embedded app window still present after it should have exited"
@@ -179,27 +203,43 @@ run_embed_scenario() {
     kill "$outer_pid" 2>/dev/null
 }
 
-# --- scenario 2: Ctrl+Q closes the embedded app, terminal survives -----
+# --- scenario: Ctrl+Q closes the embedded app, terminal survives -------
 run_ctrlq_scenario() {
     log "--- scenario: Ctrl+Q closes app, terminal survives ---"
 
-    DISPLAY=":$XDISP" xterm -T outer-terminal2 -e bash -c \
-        "'$BIN' xterm -T inner-app2 -e 'sleep 30'" &
+    DISPLAY=":$XDISP" xterm >/tmp/swallow-embed-test-outer2.log 2>&1 &
     local outer_pid=$!
 
-    wait_for 10 bash -c "DISPLAY=:$XDISP xdotool search --name outer-terminal2 >/dev/null 2>&1" || {
-        fail "outer terminal window never appeared"; kill "$outer_pid" 2>/dev/null; return
+    wait_for 10 bash -c "[ -n \"\$(DISPLAY=:$XDISP xdotool search --onlyvisible --pid $outer_pid 2>/dev/null)\" ]" || {
+        fail "outer terminal window never appeared"
+        kill "$outer_pid" 2>/dev/null
+        return
     }
     local outer_win
-    outer_win=$(find_window_by_name "outer-terminal2")
+    outer_win=$(window_for_pid "$outer_pid")
+    # xterm creates its own internal VT100 widget child window shortly
+    # after mapping, unrelated to swallow-embed; settle past that
+    # before taking the "before" baseline, or it gets miscounted as
+    # something swallow-embed added.
+    local before_children prev=-1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        before_children=$(child_count "$outer_win")
+        [ "$before_children" = "$prev" ] && break
+        prev=$before_children
+        sleep 0.3
+    done
+
+    DISPLAY=":$XDISP" xdotool windowactivate --sync "$outer_win" >/dev/null 2>&1
+    DISPLAY=":$XDISP" xdotool type -- "$BIN xterm -e sleep 30"
+    DISPLAY=":$XDISP" xdotool key Return
 
     local ticks=25
     while [ "$ticks" -gt 0 ]; do
-        DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null | grep -q "inner-app2" && break
+        [ "$(child_count "$outer_win")" -gt "$before_children" ] && break
         ticks=$((ticks - 1))
         sleep 0.2
     done
-    if ! DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null | grep -q "inner-app2"; then
+    if [ "$(child_count "$outer_win")" -le "$before_children" ]; then
         fail "inner app never got embedded, can't test Ctrl+Q"
         kill "$outer_pid" 2>/dev/null
         return
@@ -208,8 +248,8 @@ run_ctrlq_scenario() {
     DISPLAY=":$XDISP" xdotool windowactivate --sync "$outer_win" >/dev/null 2>&1
     DISPLAY=":$XDISP" xdotool key ctrl+q
 
-    wait_for 5 bash -c "! DISPLAY=:$XDISP xwininfo -id $outer_win -children 2>/dev/null | grep -q inner-app2"
-    if ! DISPLAY=":$XDISP" xwininfo -id "$outer_win" -children 2>/dev/null | grep -q "inner-app2"; then
+    wait_for 5 bash -c "[ \"\$(DISPLAY=:$XDISP xwininfo -id $outer_win -children 2>/dev/null | grep -c '^ *0x')\" -le $before_children ]"
+    if [ "$(child_count "$outer_win")" -le "$before_children" ]; then
         pass "Ctrl+Q closed the embedded app"
     else
         fail "Ctrl+Q did not close the embedded app"

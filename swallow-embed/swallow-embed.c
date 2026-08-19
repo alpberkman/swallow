@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <stdio.h>
 
+#define LENOF(a) (sizeof(a) / sizeof((a)[0]))
+
 static Window term_win, child;
 
 static int ignore_error(Display *dpy, XErrorEvent *e) {
@@ -25,20 +27,22 @@ static Window get_active_window(Display *dpy, Window root) {
     unsigned char *data = NULL;
     Window w = None;
 
-    if (XGetWindowProperty(dpy, root, prop, 0, 1, False, XA_WINDOW,
-                &type, &format, &n, &after, &data) == Success && data) {
-        if (n >= 1) w = *(Window *)data;
-        XFree(data);
+    if (XGetWindowProperty(dpy, root, prop, 0, 1, False, XA_WINDOW, &type, &format, &n, &after, &data) == Success) {
+        if(data != NULL) {
+            if(n >= 1) w = *(Window *)data;
+            XFree(data);
+        }
     }
     return w;
 }
 
 static void close_child(Display *dpy) {
     Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    Atom wm_protocols = XInternAtom(dpy, "WM_PROTOCOLS", False);
     XEvent msg = {0};
     msg.xclient.type = ClientMessage;
     msg.xclient.window = child;
-    msg.xclient.message_type = XInternAtom(dpy, "WM_PROTOCOLS", False);
+    msg.xclient.message_type = wm_protocols;
     msg.xclient.format = 32;
     msg.xclient.data.l[0] = (long)wm_delete;
     msg.xclient.data.l[1] = CurrentTime;
@@ -65,7 +69,7 @@ static Window wait_for_target_window(Display *dpy) {
             XWindowAttributes wa;
             if (w == term_win || !XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect)
                 continue;
-            if (n < 64) {
+            if (n < LENOF(candidates)) {
                 XSetWindowAttributes swa;
                 swa.override_redirect = True;
                 XChangeWindowAttributes(dpy, w, CWOverrideRedirect, &swa);
@@ -117,7 +121,6 @@ int main(int argc, char *argv[]) {
     XMoveResizeWindow(dpy, child, 0, 0, term_attrs.width, term_attrs.height);
     XSelectInput(dpy, child, StructureNotifyMask);
     XMapWindow(dpy, child);
-    XSetInputFocus(dpy, child, RevertToParent, CurrentTime);
 
     for (;;) {
         XEvent ev;
@@ -126,5 +129,12 @@ int main(int argc, char *argv[]) {
             return 0;
         if (ev.type == KeyPress)
             close_child(dpy);
+        if (ev.type == MapNotify && ev.xmap.window == child)
+            /* Focus only once the child is actually viewable.
+             * Setting it right after our own XMapWindow() above can
+             * race a window that is not viewable yet (BadMatch,
+             * silently dropped by ignore_error()), since reparenting
+             * can itself briefly unmap/remap the window first. */
+            XSetInputFocus(dpy, child, RevertToParent, CurrentTime);
     }
 }
