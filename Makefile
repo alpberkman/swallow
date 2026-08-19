@@ -5,10 +5,13 @@ BINNAME := swallow-generic
 OUTDIR  := bin
 BIN     := $(OUTDIR)/$(BINNAME)
 
-AUTONAME := swallow
+EMBEDBIN := $(OUTDIR)/swallow-embed
+
+AUTONAME := swallow-auto
 AUTOSRC  := swallow-auto.sh
 I3NAME   := swallow-i3
 I3SRC    := swallow-i3/swallow-i3.sh
+LINKNAME := swallow
 
 BASHRC              := $(HOME)/.bashrc
 SWALLOW_APPS_LINE    := SWALLOW_APPS=()
@@ -18,22 +21,28 @@ SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
 .PHONY: all clean install install-files uninstall test deb
 
-all: $(BIN)
+all: $(BIN) $(EMBEDBIN)
 
 $(BIN):
 	$(MAKE) -C swallow-generic
 
+$(EMBEDBIN):
+	$(MAKE) -C swallow-embed
+
 clean:
 	$(MAKE) -C swallow-generic clean
+	$(MAKE) -C swallow-embed clean
 	$(MAKE) -C tests clean
 
 # Separate from `install` so debian/rules can install into a DESTDIR
 # without touching a real ~/.bashrc.
-install-files: $(BIN)
+install-files: $(BIN) $(EMBEDBIN)
 	$(MAKE) -C swallow-generic install
+	$(MAKE) -C swallow-embed install
 	$(MAKE) -C swallow-wm install
 	install -Dm755 $(AUTOSRC) $(DESTDIR)$(BINDIR)/$(AUTONAME)
 	install -Dm755 $(I3SRC) $(DESTDIR)$(BINDIR)/$(I3NAME)
+	ln -sf swallow-embed $(DESTDIR)$(BINDIR)/$(LINKNAME)
 
 # Adds SWALLOW_APPS, SWALLOW_FLAGS, and a source line to ~/.bashrc, each
 # only if missing, so re-running install never overwrites edits you've
@@ -49,13 +58,15 @@ install: install-files
 
 uninstall:
 	$(MAKE) -C swallow-generic uninstall
+	$(MAKE) -C swallow-embed uninstall
 	$(MAKE) -C swallow-wm uninstall
-	rm -f $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME) $(DESTDIR)$(BINDIR)/$(LINKNAME)
 
-test: $(BIN)
+test: $(BIN) $(EMBEDBIN)
 	$(MAKE) -C tests
 	tests/test-generic.sh
 	tests/test-i3.sh --xephyr swallow-i3/swallow-i3.sh
+	tests/test-embed.sh
 
 # Output lands one folder above this one; that's normal dpkg-buildpackage
 # behavior. -us -uc skips GPG signing, unneeded for a local build.

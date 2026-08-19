@@ -12,7 +12,9 @@ This repo also has an independent i3/sway implementation, in
 instead of raw X11. See `swallow-i3/README.md`. `swallow-auto.sh`, at
 the root, picks between the two. It picks based on which window
 manager is actually running. Callers do not need window-manager-
-specific logic of their own. Everything below (build, install, test,
+specific logic of their own. It installs as `swallow-auto`, not
+`swallow`; see the `swallow-embed` note below for what `swallow`
+itself currently points at. Everything below (build, install, test,
 mechanism notes) is about the C tool. The i3/sway script shares no
 code and no build system with it.
 
@@ -29,8 +31,16 @@ though it reuses the same "next new top-level window to be created and
 mapped" detection approach. See `swallow-embed/README.md`. It has its
 own build (`swallow-embed/Makefile`, into `../bin/swallow-embed`) and
 its own test (`tests/test-embed.sh`, same throwaway Xephyr+Openbox
-pattern as `tests/test-generic.sh`). It is not wired into
-`swallow-auto.sh` or the top-level `Makefile`, and is not covered
+pattern as `tests/test-generic.sh`). The top-level `Makefile`'s
+`all`/`clean`/`test`/`install`/`uninstall` targets cover it too,
+installing the compiled binary as `swallow-embed`. `install` also
+symlinks `swallow` (the short command name) straight to
+`swallow-embed`, not to `swallow-auto.sh`'s dispatch logic. So right
+now, the plain `swallow` command runs this prototype, not the
+hide/restore tool documented below or the i3/sway script; those are
+still installed, but only reachable as `swallow-generic` and
+`swallow-auto`/`swallow-i3` directly. It is still a prototype: it has
+no CLI flags of its own yet beyond `-h`/`--help`, and is not covered
 below.
 
 ## Build / install / test
@@ -51,9 +61,10 @@ compile step to `swallow-generic/Makefile`. `tests/Makefile` builds
 the test helpers directly. Both share the same `../bin`/`bin`
 `OUTDIR`.
 
-`install` also copies in `swallow-auto.sh` (as `swallow`, the dispatch
-entry point users actually invoke) and `swallow-i3/swallow-i3.sh` (as
-`swallow-i3`), along with the compiled binary (as `swallow-generic`).
+`install` also copies in `swallow-auto.sh` (as `swallow-auto`) and
+`swallow-i3/swallow-i3.sh` (as `swallow-i3`), along with the compiled
+binaries (`swallow-generic`, `swallow-embed`). It then symlinks
+`swallow` to `swallow-embed` -- see the `swallow-embed` note above.
 It also wires `~/.bashrc` for `shell-integration.sh`. It does this
 idempotently: an empty `SWALLOW_APPS=()` line, a default
 `SWALLOW_FLAGS=...` line, and a `source .../shell-integration.sh`
@@ -61,7 +72,9 @@ line. Each line is appended only if no line with that name, or that
 exact content, exists yet. So re-running `install` never resets
 `SWALLOW_APPS`/`SWALLOW_FLAGS` once you have edited them. It never
 duplicates the `source` line either. `uninstall` only removes the
-three installed commands. It deliberately leaves `~/.bashrc` alone.
+installed commands (`swallow-generic`, `swallow-embed`, `swallow-auto`,
+`swallow-i3`, and the `swallow` symlink). It deliberately leaves
+`~/.bashrc` alone.
 
 ## How it works
 

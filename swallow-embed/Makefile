@@ -6,10 +6,14 @@ CFLAGS   += $(shell $(PKG_CONFIG) --cflags x11)
 LIBS     := $(shell $(PKG_CONFIG) --libs x11)
 
 SRC     := swallow-embed.c
+BINNAME := swallow-embed
 OUTDIR  := ../bin
-BIN     := $(OUTDIR)/swallow-embed
+BIN     := $(OUTDIR)/$(BINNAME)
 
-.PHONY: all run clean
+PREFIX  ?= $(HOME)/.local
+BINDIR  := $(PREFIX)/bin
+
+.PHONY: all run clean install uninstall
 
 all: $(BIN)
 
@@ -24,3 +28,9 @@ run: $(BIN)
 
 clean:
 	rm -f $(BIN)
+
+install: $(BIN)
+	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME)

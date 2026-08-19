@@ -9,6 +9,7 @@
 #include <X11/Xatom.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <getopt.h>
 
 #define LENOF(a) (sizeof(a) / sizeof((a)[0]))
 #define ERR(...) do { fprintf(stderr, __VA_ARGS__); _exit(1); } while (0)
@@ -127,14 +128,37 @@ static void XSetQuit(Display *dpy, Window root, Window window, unsigned int modi
     XSelectInput(dpy, root, SubstructureNotifyMask);
 }
 
+static void usage(const char *prog) {
+    fprintf(stderr, "usage: %s [-h|--help] <command> [args...]\n", prog);
+}
+
+static struct option long_opts[] = {
+    {"help", no_argument, NULL, 'h'},
+    {0},
+};
+
 int main(int argc, char *argv[]) {
     Display *dpy;
     Window root, term_win, child;
 
     XSetErrorHandler(ignore_error);
 
-    if (argc < 2)
-        ERR("usage: %s <command> [args...]\n", argv[0]);
+    int c;
+    /* Leading '+' stops at the first non-option argument (the command to
+     * launch) instead of permuting argv -- its flags aren't ours to parse. */
+    while ((c = getopt_long(argc, argv, "+h", long_opts, NULL)) != -1) {
+        switch (c) {
+        case 'h': usage(argv[0]); return 0;
+        default: usage(argv[0]); return 1;
+        }
+    }
+
+    if (optind >= argc) {
+        usage(argv[0]);
+        return 1;
+    }
+    
+    char **cmd_argv = &argv[optind];
 
     if ((dpy = XOpenDisplay(NULL)) == NULL)
         ERR("%s: cannot open display\n", argv[0]);
@@ -146,7 +170,7 @@ int main(int argc, char *argv[]) {
 
     XSetQuit(dpy, root, term_win, ControlMask, "q");
 
-    child = XSpawnChild(dpy, term_win, argv[1], &argv[1]);
+    child = XSpawnChild(dpy, term_win, cmd_argv[0], cmd_argv);
     XEmbedChild(dpy, term_win, child);
 
     return 0;
