@@ -9,10 +9,9 @@
 #include <X11/Xatom.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #define LENOF(a) (sizeof(a) / sizeof((a)[0]))
-#define ERR(...) do { fprintf(stderr, __VA_ARGS__); exit(1); } while (0)
+#define ERR(...) do { fprintf(stderr, __VA_ARGS__); _exit(1); } while (0)
 
 static int ignore_error(Display *dpy, XErrorEvent *e) {
     (void)dpy; (void)e;
@@ -50,22 +49,24 @@ static void XCloseWindow(Display *dpy, Window window) {
     XSendEvent(dpy, window, False, NoEventMask, &msg);
 }
 
-/* Finds the launched app's window: the next new top-level window to
- * be mapped. Tracks every created candidate at once, not just the
- * first, since some apps create a throwaway window before their real
- * one. Marks each candidate override_redirect before it maps, so the
- * real WM (i3, Openbox, ...) never gets a MapRequest for it and so
- * never claims it -- without this, the WM always wins the race to
- * reparent it into its own decoration frame first, and this whole
- * program ends up embedding nothing. */
-static Window wait_for_target_window(Display *dpy, Window term_win) {
+/* Forks and execs path with argv, then waits for its window and returns
+ * it. Tracks every new window, not just the first, since some apps
+ * (e.g. Kate) create a throwaway window before their real one. Marks
+ * each one override_redirect before it maps, so the WM never sees a
+ * MapRequest for it and reparents it into a decoration frame first. */
+static Window XSpawnChild(Display *dpy, Window window, const char *path, char *argv[]) {
+    if (fork() == 0) {
+        execvp(path, argv);
+        _exit(127);
+    }
+
     for (;;) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         if (ev.type == CreateNotify) {
             Window w = ev.xcreatewindow.window;
             XWindowAttributes wa;
-            if (w == term_win || !XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect)
+            if (w == window || !XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect)
                 continue;
             XSetWindowAttributes swa;
             swa.override_redirect = True;
@@ -77,18 +78,10 @@ static Window wait_for_target_window(Display *dpy, Window term_win) {
     }
 }
 
-/* Forks and execs path with argv, then waits for and returns its window. */
-static Window XSpawnChild(Display *dpy, Window window, const char *path, char *argv[]) {
-    if (fork() == 0) {
-        execvp(path, argv);
-        _exit(127);
-    }
-    return wait_for_target_window(dpy, window);
-}
-
-/* Reparents child into parent, resizes it to fill parent, maps it, then
- * blocks until child closes (returning normally) or Ctrl+Q is pressed
- * (asking child to close via XCloseWindow). */
+/* Reparents child into parent, resizes it to fill parent, and maps it.
+ * Then blocks until child closes on its own, or the close hotkey asks
+ * it to close via XCloseWindow. Resizes child again whenever parent
+ * is resized. */
 static void XEmbedChild(Display *dpy, Window parent, Window child) {
     XWindowAttributes parent_attrs;
     XGetWindowAttributes(dpy, parent, &parent_attrs);
@@ -108,25 +101,29 @@ static void XEmbedChild(Display *dpy, Window parent, Window child) {
         case KeyPress:
             XCloseWindow(dpy, child);
             break;
+        case ConfigureNotify:
+            if (ev.xconfigure.window == parent)
+                XResizeWindow(dpy, child, ev.xconfigure.width, ev.xconfigure.height);
+            break;
         case MapNotify:
             if (ev.xmap.window == child)
-                /* Focus only once the child is actually viewable.
-                 * Setting it right after our own XMapWindow() above can
-                 * race a window that is not viewable yet (BadMatch,
-                 * silently dropped by ignore_error()), since reparenting
-                 * can itself briefly unmap/remap the window first. */
+                /* Wait for the child to actually be viewable before
+                 * focusing it. Reparenting can briefly unmap/remap it,
+                 * so focusing right after our own XMapWindow() above
+                 * can race a not-yet-viewable window (BadMatch, dropped
+                 * by ignore_error()). */
                 XSetInputFocus(dpy, child, RevertToParent, CurrentTime);
             break;
         }
     }
 }
 
-/* Grabs Ctrl+<key> on term_win (the close hotkey), and subscribes to
- * new-window events on root, needed to find the launched app's window. */
+/* Grabs modifiers+key on window as the close hotkey, and subscribes to
+ * new-window events on root, so we can find the launched app's window. */
 static void XSetQuit(Display *dpy, Window root, Window window, unsigned int modifiers, const char *key) {
     KeyCode code = XKeysymToKeycode(dpy, XStringToKeysym(key));
     XGrabKey(dpy, code, modifiers, window, True, GrabModeAsync, GrabModeAsync);
-    XSelectInput(dpy, window, KeyPressMask);
+    XSelectInput(dpy, window, KeyPressMask | StructureNotifyMask);
     XSelectInput(dpy, root, SubstructureNotifyMask);
 }
 
@@ -140,12 +137,12 @@ int main(int argc, char *argv[]) {
         ERR("usage: %s <command> [args...]\n", argv[0]);
 
     if ((dpy = XOpenDisplay(NULL)) == NULL)
-        ERR("cannot open display\n");
+        ERR("%s: cannot open display\n", argv[0]);
 
     root = DefaultRootWindow(dpy);
 
     if ((term_win = XGetActiveWindow(dpy, root)) == None)
-        ERR("swallow-embed: no active window\n");
+        ERR("%s: no active window\n", argv[0]);
 
     XSetQuit(dpy, root, term_win, ControlMask, "q");
 

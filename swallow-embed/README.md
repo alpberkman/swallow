@@ -20,8 +20,8 @@ created.
 - Reparents the found window into `term_win`, resizes it to fill,
   maps it, focuses it.
 - Ctrl+Q sends the embedded app `WM_DELETE_WINDOW`.
-- No resize tracking while running: if `term_win` is resized after the
-  app is embedded, the embedded app is not resized to match.
+- While running, `term_win` is also watched for `ConfigureNotify`: if
+  it gets resized, the embedded app is resized to match.
 
 ## Known gaps
 

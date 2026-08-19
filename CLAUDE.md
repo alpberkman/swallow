@@ -20,6 +20,19 @@ This repo also has `swallow-wm/`. This is a separate, standalone kiosk
 window manager (`mwm`). It has no link to swallow's own hide-and-
 restore job. See `swallow-wm/README.md`. It is not covered below.
 
+This repo also has `swallow-embed/`. This is a prototype, independent
+of the C tool above: instead of hiding the terminal and creating a
+separate window for the app, it reparents the launched app's window
+directly into the terminal's own window (`XReparentWindow`), so no new
+window is ever created. It shares no code with `swallow-generic.c`,
+though it reuses the same "next new top-level window to be created and
+mapped" detection approach. See `swallow-embed/README.md`. It has its
+own build (`swallow-embed/Makefile`, into `../bin/swallow-embed`) and
+its own test (`tests/test-embed.sh`, same throwaway Xephyr+Openbox
+pattern as `tests/test-generic.sh`). It is not wired into
+`swallow-auto.sh` or the top-level `Makefile`, and is not covered
+below.
+
 ## Build / install / test
 
 ```
