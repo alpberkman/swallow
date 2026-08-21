@@ -6,8 +6,9 @@ CFLAGS   += $(shell $(PKG_CONFIG) --cflags x11 xrandr)
 LIBS     := $(shell $(PKG_CONFIG) --libs x11 xrandr)
 
 SRC     := mwm.c
+BINNAME := mwm
 OUTDIR  := ../bin
-BIN     := $(OUTDIR)/mwm
+BIN     := $(OUTDIR)/$(BINNAME)
 
 PREFIX  ?= $(HOME)/.local
 BINDIR  := $(PREFIX)/bin
@@ -34,8 +35,8 @@ clean:
 # swallow-wm.sh looks up ../bin/mwm from its own folder. This still
 # finds mwm here, because both files install into the same $(BINDIR).
 install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/mwm
+	install -Dm755 $(BIN) $(DESTDIR)$(BINDIR)/$(BINNAME)
 	install -Dm755 $(SCRIPTSRC) $(DESTDIR)$(BINDIR)/$(SCRIPTNAME)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/mwm $(DESTDIR)$(BINDIR)/$(SCRIPTNAME)
+	rm -f $(DESTDIR)$(BINDIR)/$(BINNAME) $(DESTDIR)$(BINDIR)/$(SCRIPTNAME)

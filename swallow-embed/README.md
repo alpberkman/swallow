@@ -1,35 +1,15 @@
 # swallow-embed
 
-Prototype. Reparents a launched app's window into the window that is
-currently active (`_NET_ACTIVE_WINDOW`, normally the terminal this ran
-from), via `XReparentWindow`, on the same X display. No new window is
-created.
+Instead of hiding the terminal and opening a separate window for the
+app, this reparents the app's window directly into the terminal's
+window (`XReparentWindow`). No second window is ever created.
 
-## How it works
+## Requirements
 
-- Finds the active window (`term_win`).
-- Selects `SubstructureNotify` on root, launches `<command>`, and
-  tracks "the next new top-level window to be created and mapped" the
-  same way `swallow-generic.c` does: candidate `CreateNotify` windows,
-  a self-addressed `MapNotify`, not by PID.
-- Marks each candidate `override_redirect` before it maps. Without
-  this, the real WM (i3, Openbox, ...) still holds
-  `SubstructureRedirectMask` on root and always wins the race to
-  reparent the window into its own decoration frame first, and nothing
-  gets embedded.
-- Reparents the found window into `term_win`, resizes it to fill,
-  maps it, focuses it.
-- Ctrl+Q sends the embedded app `WM_DELETE_WINDOW`.
-- While running, `term_win` is also watched for `ConfigureNotify`: if
-  it gets resized, the embedded app is resized to match.
-
-## Known gaps
-
-- Apps that create their own throwaway probe window before their real
-  one (confirmed: `lxterminal`'s D-Bus single-instance handshake) can
-  get the probe embedded instead of the real window.
-- No flags (geometry, `--kill`, timeout). Not wired into
-  `swallow-auto.sh` or the top-level `Makefile`.
+- Xlib (`libx11-dev` / `libX11-devel`)
+- `pkg-config`
+- A C11 compiler
+- Optional, for tests: `Xephyr`, `openbox`, `xdotool`, `xprop`
 
 ## Build
 
@@ -39,18 +19,56 @@ make
 
 Builds `../bin/swallow-embed`.
 
+## Install
+
+```sh
+make install                    # ~/.local/bin
+make install PREFIX=/usr/local  # or any other prefix (needs sudo for a system dir)
+make uninstall
+```
+
 ## Usage
 
 ```sh
-swallow-embed <command> [args...]
+swallow-embed [-h|--help] [-s|--shift] [-c|--ctrl] [-a|--alt] [-S|--super] [-q|--quit-key <key>] [-k|--kill] [-t|--timeout <n>] <command> [args...]
 ```
 
-Run from the terminal you want the app embedded into.
+Run from the terminal you want the app embedded into. Quit modifiers
+default to `--ctrl` alone; `--quit-key` takes an X11 keysym name and
+defaults to `q`.
 
-## Test
+## How it works
+
+- Finds the active window (`term_win`).
+- Grabs the quit hotkey (`--ctrl` alone by default) on `term_win`, and
+  selects `SubstructureNotify` on root. Exits with an error if
+  `--quit-key` has no keycode on the current keyboard, instead of
+  silently installing a no-op hotkey.
+- Forks, execs `<command>`, and tracks "the next new top-level window
+  created and mapped" (candidate `CreateNotify` windows, a
+  self-addressed `MapNotify`), never by PID. Gives up after
+  `--timeout` seconds (default 3; 0 waits forever; capped at 15).
+- Marks each candidate `override_redirect` before it maps. Without
+  this, the real WM still holds `SubstructureRedirectMask` on root and
+  wins the race to reparent the window into its own frame first, so
+  nothing gets embedded.
+- Reparents the found window into `term_win`, resizes it to fill, maps
+  it, focuses it once mapped.
+- The quit hotkey sends the embedded app `WM_DELETE_WINDOW`, falling
+  back to `XKillClient` if it doesn't advertise support. `--kill`
+  additionally closes `term_win` the same way once the app's window is
+  gone.
+- `term_win` is watched for `ConfigureNotify` while running; a resize
+  resizes the embedded app to match.
+
+## Testing
 
 ```sh
 ../tests/test-embed.sh
 ```
 
 Same throwaway Xephyr+openbox pattern as `test-generic.sh`.
+
+## License
+
+GPLv3 or later. See [`../LICENSE`](../LICENSE).

@@ -6,6 +6,7 @@ OUTDIR  := bin
 BIN     := $(OUTDIR)/$(BINNAME)
 
 EMBEDBIN := $(OUTDIR)/swallow-embed
+WMBIN    := $(OUTDIR)/mwm
 
 AUTONAME := swallow-auto
 AUTOSRC  := swallow-auto.sh
@@ -15,13 +16,13 @@ LINKNAME := swallow
 
 BASHRC              := $(HOME)/.bashrc
 SWALLOW_APPS_LINE    := SWALLOW_APPS=()
-SWALLOW_FLAGS_LINE   := SWALLOW_FLAGS="--remain --occupy --timeout 3"
+SWALLOW_FLAGS_LINE   := SWALLOW_FLAGS="--ctrl --shift --quit-key q --timeout 15"
 SHELL_INTEGRATION    := $(CURDIR)/shell-integration.sh
 SHELL_INTEGRATION_LINE := source $(SHELL_INTEGRATION)
 
-.PHONY: all clean install install-files uninstall test deb
+.PHONY: all clean install install-files uninstall test deb $(BIN) $(EMBEDBIN) $(WMBIN)
 
-all: $(BIN) $(EMBEDBIN)
+all: $(BIN) $(EMBEDBIN) $(WMBIN)
 
 $(BIN):
 	$(MAKE) -C swallow-generic
@@ -29,14 +30,18 @@ $(BIN):
 $(EMBEDBIN):
 	$(MAKE) -C swallow-embed
 
+$(WMBIN):
+	$(MAKE) -C swallow-wm
+
 clean:
 	$(MAKE) -C swallow-generic clean
 	$(MAKE) -C swallow-embed clean
+	$(MAKE) -C swallow-wm clean
 	$(MAKE) -C tests clean
 
 # Separate from `install` so debian/rules can install into a DESTDIR
 # without touching a real ~/.bashrc.
-install-files: $(BIN) $(EMBEDBIN)
+install-files: $(BIN) $(EMBEDBIN) $(WMBIN)
 	$(MAKE) -C swallow-generic install
 	$(MAKE) -C swallow-embed install
 	$(MAKE) -C swallow-wm install
@@ -62,7 +67,7 @@ uninstall:
 	$(MAKE) -C swallow-wm uninstall
 	rm -f $(DESTDIR)$(BINDIR)/$(AUTONAME) $(DESTDIR)$(BINDIR)/$(I3NAME) $(DESTDIR)$(BINDIR)/$(LINKNAME)
 
-test: $(BIN) $(EMBEDBIN)
+test: $(BIN) $(EMBEDBIN) $(WMBIN)
 	$(MAKE) -C tests
 	tests/test-generic.sh
 	tests/test-i3.sh --xephyr swallow-i3/swallow-i3.sh
