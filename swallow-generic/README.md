@@ -4,7 +4,9 @@ The C/X11 implementation of `swallow`. Hides the terminal while the
 app is open, restores it when the app closes. Targets Openbox and
 other floating window managers.
 
-Can also be used with i3 but window placing logic will not work properly. Atleast it will hide and unside windows.
+Also works under i3, but only the hide/restore part — the placement
+flags (`--occupy`, `-x/-y/-w/-l`, etc.) rely on EWMH geometry requests
+that i3 mostly ignores. Use `swallow-i3` there instead.
 
 ## Requirements
 

@@ -7,7 +7,10 @@ it put the terminal in the scratchpad instead of just unmapping it,
 and place the launched app directly into the terminal's tiled slot
 through i3's tree model.
 
-Works mostly okay but windows might flash while opening/closing an application and there is no guarantee that they will be placed in the correct location. Nonetheless it works fine with a small number of terminals or when always using the last/rightmost terminal.
+There can be a
+brief flash while a window opens or closes, and placement is best-
+effort rather than guaranteed. It's reliable in ordinary use: a
+handful of terminals, or always launching from the right most terminal.
 
 Plain bash, no build step.
 

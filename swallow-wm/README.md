@@ -1,14 +1,16 @@
 # swallow-wm
 
-`mwm`: a minimal kiosk window manager. It gets the same result (only the app's window is ever visible)
-a different way.  `mwm` instead runs a whole nested Xephyr session where it's
-the window manager, and just always shows the newest window
+`mwm`: a minimal kiosk window manager. It gets the same result (only the app's window is ever visible) a different way.  `mwm` instead runs a whole nested Xephyr session where it's
+the window manager, and just shows the newest window
 full-screen. Every window that opens is bound to that Xephyr display,
 so this applies to anything you run in the session automatically.
 There's no need to call swallow, or wrap any individual app, to get
 it but you should call the initial terminal with it.
 
-The downside is the startup takes some time. Not slow but also not instantanous. The upside is every new window is automatically inside it.
+The downside is a nested Xephyr session takes a moment to start, so
+there's a short delay before the terminal appears. The upside is every
+window opened afterward is swallowed automatically, with no per-app
+setup.
 
 ## Requirements
 

@@ -1,24 +1,31 @@
 # swallow
 
-An X11 command-line tool for making the terminal swallow GUI windows. So when you open a GUI app using swallow the GUI app will replace the terminal.
+A command-line tool that makes a terminal swallow GUI windows: run a
+GUI app from the terminal, and the app's window takes the terminal's
+place instead of opening alongside it.
 
 ## Versions
 
-- **`swallow-generic`**: Uses X11 API to hide the
-  terminal and restores it later, targeting Openbox and other floating window managers. See
-  [`swallow-generic/README.md`](swallow-generic/README.md).
-- **`swallow-i3`**: The same idea for i3 and sway, written as a shell script on top of their IPC instead of raw X11. See
+- **`swallow-generic`**: hides the terminal via raw X11 and restores
+  it when the app closes. Targets Openbox and other floating window
+  managers. See [`swallow-generic/README.md`](swallow-generic/README.md).
+- **`swallow-i3`**: the same idea for i3 and sway, built on their IPC
+  instead of raw X11. A shell script. See
   [`swallow-i3/README.md`](swallow-i3/README.md).
-- **`swallow-embed`**: Uses X11 API. Instead of hiding the
-  terminal and opening a separate app window, it reparents the app's
-  window directly into the terminal's own window, so no second window ever appears. See [`swallow-embed/README.md`](swallow-embed/README.md).
-- **`swallow-wm`**: a standalone kiosk window manager (`mwm`), unrelated that forces the newest GUI app to be on top. Uses Xephyr. See [`swallow-wm/README.md`](swallow-wm/README.md).
+- **`swallow-embed`**: reparents the app's window directly into the
+  terminal's own window (`XReparentWindow`), so no second window is
+  ever created. See [`swallow-embed/README.md`](swallow-embed/README.md).
+- **`swallow-wm`**: a standalone kiosk window manager (`mwm`). It runs a nested Xephyr session and always shows
+  the newest window full-screen. See [`swallow-wm/README.md`](swallow-wm/README.md).
 
 ## The two helper scripts
 
-- **`swallow-auto.sh`**, used to pick the correct version depending on your setup/wm and filter the cli args.
+- **`swallow-auto.sh`**: picks the right version above for your window
+  manager and forwards the CLI args to it.
 - **`shell-integration.sh`**: wraps a list of GUI apps you choose in
-  same-named bash functions, so typing `gui-app` runs swallow. `make install` wires it into `~/.bashrc`, but it does nothing until you fill in `SWALLOW_APPS`.
+  same-named bash functions, so typing `gui-app` runs swallow on it.
+  `make install` wires this into `~/.bashrc`, but it does nothing until
+  you fill in `SWALLOW_APPS`.
 
 ## Build
 
